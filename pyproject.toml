@@ -1,0 +1,19 @@
+[project]
+name = "fog-of-war-chess-bots"
+version = "0.1.0"
+description = "Bots and local tooling for the MIT 6.7980 Fog of War chess challenge"
+requires-python = "==3.14.*"
+# Keep these in sync with starter/requirements.txt (the arena runtime).
+dependencies = [
+    "python-chess==1.999",
+    "chess==1.11.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false
