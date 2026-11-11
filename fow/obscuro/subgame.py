@@ -1,13 +1,4 @@
-"""The depth-2 subgame of section 8.1, stored as flat arrays.
-
-    chance picks a root r            (uniform over the sampled roots)
-    we pick a move a                 (one infoset: every root looks the same to us)
-    the opponent picks a reply b     (infoset keyed by its observation and legal moves)
-    leaf value                       (terminal result, else the heuristic)
-
-Opponent nodes are indexed j = r * n_actions + a. Each opponent infoset owns a
-contiguous block of "slots", one per legal reply; a leaf is the pair (node j, slot).
-"""
+"""The depth-2 subgame, stored as flat arrays (layout in docs/obscuro.md)."""
 from __future__ import annotations
 
 from dataclasses import dataclass

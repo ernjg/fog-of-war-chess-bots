@@ -1,9 +1,4 @@
-"""Heuristic leaf value: material plus visible squares, squashed into [-1, 1].
-
-This is the paper's "simple eval". Visible squares are approximated by the
-squares a side occupies or attacks, which is cheaper than the referee's exact
-visibility (it misses pawn pushes and en passant).
-"""
+"""Heuristic leaf value: material plus visible squares, squashed into [-1, 1]."""
 from __future__ import annotations
 
 import math

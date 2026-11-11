@@ -79,6 +79,21 @@ the flat folder `dist/greedy/`, zips it to `dist/greedy.zip` with `run.sh` at
 the root, then unzips it to a temp dir and plays one referee game from there
 against the starter baseline. 
 
+## Arena runtime
+
+| | |
+| --- | --- |
+| Runtime | Linux amd64, Python 3.14.8, C++, Rust |
+| CPU | 2 physical cores / 4 threads, shared by both bots; your opponent is paused on your turn |
+| Memory | 4 GiB per bot |
+| Neural inference | CPU PyTorch, JAX and ONNX Runtime |
+| Build limit | 5 minutes |
+| Initialization | 15 seconds, before the game clock starts |
+| Game clock | 3 minutes + 2 seconds per move |
+
+No network and no pip; dependencies must be in the ZIP, except the preinstalled
+libraries listed in `starter/README.md` (NumPy among them).
+
 ## Caution
 
 - Any stdout line other than `ready` / `move <uci>` forfeits the game.

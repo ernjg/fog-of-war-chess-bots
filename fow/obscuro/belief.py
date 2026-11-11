@@ -1,10 +1,4 @@
-"""The belief set P: every position consistent with our observations (section 2).
-
-P is filtered exactly (section 2.1) but capped at ``max_states`` by uniform
-subsampling. The cap can drop the true position; if no state then survives an
-observation, the previous states are projected onto it (``project``) so the bot
-keeps a plausible belief instead of an empty one.
-"""
+"""The belief set: every position consistent with our observations, capped in size."""
 from __future__ import annotations
 
 import random
@@ -21,7 +15,7 @@ StateKey = tuple
 
 
 def state_key(board: chess.Board) -> StateKey:
-    """The state tuple (B, t, c, e) from section 1.1, as bitboards."""
+    """Hashable identity of a position: piece bitboards, side to move, castling, en passant."""
     return (board.pawns, board.knights, board.bishops, board.rooks, board.queens,
             board.kings, board.occupied_co[chess.WHITE], board.occupied_co[chess.BLACK],
             board.turn, board.castling_rights, board.ep_square)
@@ -66,11 +60,7 @@ class Belief:
         return len(self.states)
 
     def observe(self, obs: str, own_move: chess.Move | None = None) -> None:
-        """Filter P with the observation that follows one ply (section 2.1).
-
-        ``own_move`` is our move if we played the ply, else None (the opponent
-        played it, or this is the first observation of the game).
-        """
+        """Filter with the observation after one ply; ``own_move`` is None unless we played it."""
         if own_move is not None:
             candidates = self._successors(
                 lambda board: (own_move,) if own_move in fow_moves(board) else ())

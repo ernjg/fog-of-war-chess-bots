@@ -1,8 +1,8 @@
 # Obscuro v1
 
 A reduced version of Obscuro ([Zhang and Sandholm, arXiv:2506.01242](https://arxiv.org/abs/2506.01242)).
-The bot is `bots/obscuro/`; the algorithm is the `fow/obscuro/` package. Section numbers in the
-docstrings refer to the team doc "Obscuro: the search pipeline, formally".
+The bot is `bots/obscuro/`; the algorithm is the `fow/obscuro/` package. The team doc
+"Obscuro: the search pipeline, formally" has the full derivation.
 
 ## One move
 
@@ -29,6 +29,25 @@ docstrings refer to the team doc "Obscuro: the search pipeline, formally".
 What these cost: no bluffs that rely on the opponent fearing positions we know are false;
 the opponent is modeled as forgetting its past observations; roots are weighted uniformly
 instead of by the opponent's likely play; and the search sees only one reply deep.
+
+## Data layout
+
+The subgame (`subgame.py`) is four plies of structure stored as flat NumPy arrays:
+
+    chance picks a root r            (uniform over the sampled roots)
+    we pick a move a                 (one infoset: every root looks the same to us)
+    the opponent picks a reply b     (infoset keyed by its observation and legal moves)
+    leaf value                       (terminal result, else the heuristic)
+
+Opponent nodes are indexed `j = r * n_actions + a`. Each opponent infoset owns a
+contiguous block of "slots", one per legal reply, so `slot_infoset[s]` names the infoset
+of slot `s` and `infoset_start` marks each block. A leaf is the pair (node `j`, slot).
+`regret.py` runs regret matching over these slots with counterfactual values to maximize;
+the solver negates them for the opponent, who minimizes our value.
+
+The heuristic (`evaluation.py`) approximates a side's visible squares by the squares it
+occupies or attacks. That is cheaper than the referee's exact visibility and misses pawn
+pushes and en passant.
 
 ## Design choices
 

@@ -1,7 +1,4 @@
-"""Alternating PCFR+ on a Depth2Game (section 4). We play the last iterate.
-
-Values are from our side; the opponent minimizes them, so its utilities are negated.
-"""
+"""Alternating PCFR+ on a Depth2Game; values are from our side."""
 from __future__ import annotations
 
 import numpy as np
@@ -32,7 +29,7 @@ class Depth2Solver:
         self.iterations += 1
 
     def our_action_values(self) -> np.ndarray:
-        """u^cf(I, a) for our single infoset: the expected value of each of our moves."""
+        """Expected value of each of our moves under the opponent's current strategy."""
         return self.game.root_weight @ self._node_values().reshape(self.game.n_roots, -1)
 
     @property
@@ -56,7 +53,7 @@ class Depth2Solver:
         return np.where(self._is_terminal, self._terminal_value, values)
 
     def _their_counterfactual_values(self) -> np.ndarray:
-        """u^cf(J, b) per opponent slot, weighted by chance and our reach."""
+        """Counterfactual value of each opponent reply, weighted by chance and our reach."""
         reach = (self.game.root_weight[self._leaf_root]
                  * self.ours.strategy[self._leaf_action])
         return np.bincount(self.game.leaf_slot, weights=reach * self.game.leaf_value,

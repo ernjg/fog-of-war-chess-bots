@@ -1,8 +1,4 @@
-"""One move of search (section 7, reduced): sample roots, build, solve, pick.
-
-The time budget is split: up to ``BUILD_SHARE`` of it adds sampled roots to the
-subgame, and the rest runs PCFR+ on the finished subgame.
-"""
+"""One move of search: sample roots, build the subgame, solve it, pick a move."""
 from __future__ import annotations
 
 import random
@@ -36,10 +32,7 @@ class SearchResult:
 
 def search(states: list[chess.Board], our_moves: list[chess.Move], side: chess.Color,
            budget: float, rng: random.Random) -> SearchResult | None:
-    """Return the top action of the last PCFR+ iterate (top-1 purification, section 6.2).
-
-    Returns None if no sampled state admits all of ``our_moves``.
-    """
+    """Top action of the last PCFR+ iterate, or None if no state admits all our moves."""
     start = time.monotonic()
     builder = SubgameBuilder(our_moves, side)
     for root in rng.sample(states, len(states)):
