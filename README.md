@@ -10,7 +10,8 @@ starter/          official kit (referee.py = rules + local runner; do not edit)
 fow/              shared library
   protocol.py     stdin/stdout loop driving an Agent (reset / observe / act)
   local.py        helpers for running bots locally, incl. SIGSTOP/SIGCONT pausing
-bots/<name>/      one folder per bot: bot.py + run.sh
+  obscuro/        reduced Obscuro: belief set, depth-2 subgame, PCFR+ (see docs/obscuro.md)
+bots/<name>/      one folder per bot: bot.py + run.sh (random, greedy, obscuro)
 tools/tournament.py   local round-robin with W/D/L table and Elo (K=8)
 tools/package.py      build the upload ZIP and smoke-test it
 tests/            pytest

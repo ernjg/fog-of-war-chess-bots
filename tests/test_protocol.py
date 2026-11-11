@@ -31,10 +31,13 @@ def read_line(proc: subprocess.Popen) -> str:
     return line.rstrip("\n")
 
 
-@pytest.mark.parametrize("bot", ["random", "greedy"])
+BOT_ARGS = {"random": [], "greedy": [], "obscuro": ["--move-time", "0.05", "--max-states", "300"]}
+
+
+@pytest.mark.parametrize("bot", sorted(BOT_ARGS))
 def test_full_game_stdout_is_protocol_only(bot: str) -> None:
     env = dict(os.environ, PYTHON=sys.executable)
-    proc = subprocess.Popen(["bash", str(ROOT / "bots" / bot / "run.sh"), "--seed", "7"],
+    proc = subprocess.Popen(["bash", str(ROOT / "bots" / bot / "run.sh"), "--seed", "7", *BOT_ARGS[bot]],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
     stdout_lines: list[str] = []

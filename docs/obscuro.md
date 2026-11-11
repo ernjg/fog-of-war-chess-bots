@@ -1,0 +1,57 @@
+# Obscuro v1
+
+A reduced version of Obscuro ([Zhang and Sandholm, arXiv:2506.01242](https://arxiv.org/abs/2506.01242)).
+The bot is `bots/obscuro/`; the algorithm is the `fow/obscuro/` package. Section numbers in the
+docstrings refer to the team doc "Obscuro: the search pipeline, formally".
+
+## One move
+
+1. **Belief** (`belief.py`). Keep P, every position consistent with our observations,
+   filtered exactly after each ply and capped at 1,500 states.
+2. **Subgame** (`subgame.py`). Sample up to 200 roots from P and build a depth-2 game:
+   chance picks a root, we move (one infoset, since every root looks the same to us),
+   the opponent replies (infosets keyed by what it sees), leaves are scored by the heuristic.
+3. **Solve** (`regret.py`, `solver.py`). Alternating PCFR+ on that game.
+4. **Move** (`search.py`). Play the top action of the last iterate.
+
+## Differences from the paper
+
+| | Paper | v1 |
+| --- | --- | --- |
+| Belief | Exact P, up to 10^6 states | Capped at 1,500 by uniform subsampling |
+| Roots | KLUSS: our infoset plus histories the opponent confuses with it | Uniform sample of P each turn |
+| Opponent infosets | Full observation history | Current observation and legal replies |
+| Subgame safety | Resolve / Maxmargin gadget, tree reused across turns | None; tree rebuilt every turn |
+| Tree | Grown by one-sided GT-CFR | Fixed depth 2 |
+| Leaf eval | Stockfish 14 | Material + squares occupied or attacked |
+| Move choice | Up to 3 stable moves when safe | Top action only |
+
+What these cost: no bluffs that rely on the opponent fearing positions we know are false;
+the opponent is modeled as forgetting its past observations; roots are weighted uniformly
+instead of by the opponent's likely play; and the search sees only one reply deep.
+
+## Design choices
+
+- **Flat arrays, not a tree walk.** The depth-2 game is stored as NumPy arrays and one PCFR+
+  iteration is two `bincount` passes over the leaves, so a move gets thousands of iterations
+  in Python. The Nash gap is about 0 every move.
+- **Most of the budget builds roots.** Building one root costs 20 to 30 ms while the solve
+  converges in a few hundred iterations, so 80% of the move time goes to sampling roots.
+- **Legal replies in the infoset key.** Guarantees every node of an opponent infoset has the
+  same actions, without relying on the observation to determine them.
+- **Belief repair.** If the cap drops the true position and an observation leaves no
+  survivor, the previous states are projected onto the observation instead of emptying P.
+  The bot logs a repair count.
+- **Time.** `min(remaining / 30 + 0.8 * increment, remaining / 5)` seconds per move.
+
+Not modeled: draws by repetition or the 100-ply rule, and exact visibility in the heuristic.
+
+## Next
+
+In the order the paper's ablations suggest:
+
+1. **GT-CFR expansion** instead of the fixed depth-2 tree (needs a general tree in place of
+   the flat arrays; `regret.py` carries over unchanged).
+2. **Purification over up to 3 stable moves**, so the bot mixes when it is safe to.
+3. **Tree reuse with the Resolve / Maxmargin gadget**, which also gives real root weights.
+4. **KLUSS roots**: add the histories the opponent cannot tell apart from ours.
