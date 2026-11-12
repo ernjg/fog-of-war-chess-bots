@@ -61,7 +61,15 @@ pushes and en passant.
 - **Belief repair.** If the cap drops the true position and an observation leaves no
   survivor, the previous states are projected onto the observation instead of emptying P.
   The bot logs a repair count.
-- **Time.** `min(remaining / 30 + 0.8 * increment, remaining / 5)` seconds per move.
+- **Time.** `min(remaining / 30 + 0.8 * increment, remaining / 5)` seconds per move. The belief
+  update runs in `observe()`, on our clock, so the bot times it and subtracts it from the
+  budget; each move's log line reports it as `belief_update`.
+- **Errors do not end the game.** An exception leaving `observe()` or `act()` exits the
+  process, which the referee scores as a loss. The bot catches them and degrades in steps:
+  if the belief update fails, the old states are projected onto the current observation
+  (counted as a repair); if the search fails, has no usable belief, or has under 0.1 s, the
+  bot plays a fallback move from the tracker's legal list (best capture that does not leave
+  our king attacked by a visible piece). Tracebacks go to stderr.
 
 Not modeled: draws by repetition or the 100-ply rule, and exact visibility in the heuristic.
 
