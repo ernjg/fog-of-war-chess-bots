@@ -71,7 +71,15 @@ pushes and en passant.
   bot plays a fallback move from the tracker's legal list (best capture that does not leave
   our king attacked by a visible piece). Tracebacks go to stderr.
 
-Not modeled: draws by repetition or the 100-ply rule, and exact visibility in the heuristic.
+- **Repetition avoidance.** The search has no memory, so when winning it can shuffle the
+  same moves until the game is drawn by threefold repetition. The bot counts the
+  (observation, move) pairs it has played. When the search value is above 0.1 and the top
+  move repeats one of them, each earlier play costs that move 0.05 and the best move after
+  the discount is played (`choose_action` in `search.py`, logged as `repeat_avoided`).
+  Nothing changes when we are not ahead or the top move is new.
+
+Not modeled: the 100-ply and 1,000-ply draws, repetition inside the search tree, and exact
+visibility in the heuristic.
 
 ## Next
 
