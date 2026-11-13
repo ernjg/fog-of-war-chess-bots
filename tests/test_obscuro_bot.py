@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 import fow  # noqa: E402,F401
 import chess  # noqa: E402
+from fow.obscuro.search import SearchResult  # noqa: E402
 from referee import FowBoard, fow_moves, observation  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("obscuro_bot", ROOT / "bots" / "obscuro" / "bot.py")
@@ -59,7 +60,7 @@ def test_belief_time_is_subtracted_from_the_budget(monkeypatch) -> None:
     agent = make_agent(move_time=None)
     seen = {}
 
-    def fake_search(states, moves, side, budget, rng):
+    def fake_search(states, moves, side, budget, rng, repeat_counts=None):
         seen["budget"] = budget
         return None
 
@@ -129,3 +130,21 @@ def test_legal_move_error_retries_without_en_passant(monkeypatch) -> None:
     agent.observe(observation(FowBoard(), chess.WHITE))
     monkeypatch.setattr(agent.tracker, "legal_moves", boom)
     assert chess.Move.from_uci(agent.act(100.0)) in fow_moves(FowBoard())
+
+
+def test_repeated_move_is_passed_to_search_with_its_count(monkeypatch) -> None:
+    agent = make_agent()
+    seen = []
+
+    def fake_search(states, moves, side, budget, rng, repeat_counts=None):
+        seen.append(None if repeat_counts is None else dict(zip([m.uci() for m in moves], repeat_counts)))
+        return SearchResult(chess.Move.from_uci("g1f3"), 0.5, 0.0, 1, 1)
+
+    monkeypatch.setattr(bot, "search", fake_search)
+    obs = observation(FowBoard(), chess.WHITE)
+    for _ in range(3):
+        agent.observe(obs)   # the same view three times, as when both sides shuffle
+        agent.act(100.0)
+    assert seen[0] is None
+    assert seen[1]["g1f3"] == 1 and seen[2]["g1f3"] == 2
+    assert sum(seen[2].values()) == 2

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from collections import Counter
 import sys
 import time
 import traceback
@@ -44,6 +45,7 @@ class ObscuroAgent(Agent):
         self.observe_seconds = 0.0   # belief-update time this turn; it runs on our clock
         self.belief_ok = True
         self.fallbacks = 0
+        self.played: Counter[tuple[str, str]] = Counter()  # (observation, move) pairs we played
         log(f"obscuro: playing {'white' if color else 'black'} at {base:g}+{inc:g}")
 
     def observe(self, obs: str) -> None:
@@ -99,6 +101,7 @@ class ObscuroAgent(Agent):
                 log("obscuro: search failed, playing a fallback move")
                 traceback.print_exc(file=sys.stderr)
                 move = self._fallback_move(moves)
+        self.played[self.tracker.current, move.uci()] += 1
         self.tracker.record_move(move)
         self.last_move = move
         return move.uci()
@@ -119,17 +122,22 @@ class ObscuroAgent(Agent):
         else:
             # The belief update already used `spent` seconds of this turn's clock.
             budget = move_budget(remaining_time - spent, self.increment) - spent
-        if not self.belief_ok or budget < MIN_SEARCH_SECONDS:
+        # A fixed --move-time is a deliberate choice (tests use tiny ones); the floor
+        # only guards the clock-based budget.
+        if not self.belief_ok or (not self.move_time and budget < MIN_SEARCH_SECONDS):
             log(f"obscuro: no search (belief_ok={self.belief_ok} budget={budget:.2f}s "
                 f"belief_update={spent:.2f}s)")
             return self._fallback_move(moves)
-        result = search(self.belief.states, moves, self.side, budget, self.rng)
+        repeats = [self.played[self.tracker.current, move.uci()] for move in moves]
+        result = search(self.belief.states, moves, self.side, budget, self.rng,
+                        repeat_counts=repeats if any(repeats) else None)
         if result is None:
             log(f"obscuro: no usable root among {len(self.belief)} states")
             return self._fallback_move(moves)
         log(f"obscuro: {result.move.uci()} value={result.value:+.3f} gap={result.nash_gap:.3f} "
             f"|P|={len(self.belief)} roots={result.roots} iters={result.iterations} "
-            f"repairs={self.belief.repairs} budget={budget:.2f}s belief_update={spent:.2f}s")
+            f"repairs={self.belief.repairs} budget={budget:.2f}s belief_update={spent:.2f}s"
+            + (" repeat_avoided" if result.repeat_avoided else ""))
         return result.move
 
     def _fallback_move(self, moves: list[chess.Move]) -> chess.Move:
