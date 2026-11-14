@@ -20,7 +20,7 @@ for _root in (_HERE, *_HERE.parents[1:2]):
 import chess  # noqa: E402
 
 from fow.obscuro.belief import Belief, project  # noqa: E402
-from fow.obscuro.search import move_budget, search  # noqa: E402
+from fow.obscuro.search import move_budget, own_placement, search  # noqa: E402
 from fow.protocol import Agent, log, run  # noqa: E402
 from uniform_random import ObservationTracker, candidates  # noqa: E402  (starter kit)
 
@@ -45,13 +45,17 @@ class ObscuroAgent(Agent):
         self.observe_seconds = 0.0   # belief-update time this turn; it runs on our clock
         self.belief_ok = True
         self.fallbacks = 0
-        self.played: Counter[tuple[str, str]] = Counter()  # (observation, move) pairs we played
+        # Where our pieces have stood: at the start and after each move of ours, with the
+        # number of times. A position can only repeat if they stand as they did before.
+        self.stood: Counter[str] = Counter()
         log(f"obscuro: playing {'white' if color else 'black'} at {base:g}+{inc:g}")
 
     def observe(self, obs: str) -> None:
         started = time.monotonic()
         self.tracker.observe(obs)
         to_move = chess.WHITE if self.plies % 2 == 0 else chess.BLACK
+        if self.plies == 0:
+            self.stood[own_placement(obs, self.side)] += 1  # the starting position counts too
         self.plies += 1
         own_move, self.last_move = self.last_move, None
         try:
@@ -101,7 +105,7 @@ class ObscuroAgent(Agent):
                 log("obscuro: search failed, playing a fallback move")
                 traceback.print_exc(file=sys.stderr)
                 move = self._fallback_move(moves)
-        self.played[self.tracker.current, move.uci()] += 1
+        self.stood[own_placement(self.tracker.current, self.side, move)] += 1
         self.tracker.record_move(move)
         self.last_move = move
         return move.uci()
@@ -128,7 +132,7 @@ class ObscuroAgent(Agent):
             log(f"obscuro: no search (belief_ok={self.belief_ok} budget={budget:.2f}s "
                 f"belief_update={spent:.2f}s)")
             return self._fallback_move(moves)
-        repeats = [self.played[self.tracker.current, move.uci()] for move in moves]
+        repeats = [self.stood[own_placement(self.tracker.current, self.side, move)] for move in moves]
         result = search(self.belief.states, moves, self.side, budget, self.rng,
                         repeat_counts=repeats if any(repeats) else None)
         if result is None:
