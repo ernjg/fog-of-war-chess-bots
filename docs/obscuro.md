@@ -71,7 +71,21 @@ pushes and en passant.
   bot plays a fallback move from the tracker's legal list (best capture that does not leave
   our king attacked by a visible piece). Tracebacks go to stderr.
 
-Not modeled: draws by repetition or the 100-ply rule, and exact visibility in the heuristic.
+- **Repetition avoidance.** The search has no memory, so when winning it can shuffle
+  until the game is drawn by threefold repetition. A position can only repeat if our own
+  pieces stand where they stood before, and those we always know, so the bot counts how
+  often they have stood in each arrangement (at the start and after each move of ours).
+  When the search value is above 0.1 and the top move goes back to an arrangement, the
+  first time back costs it 0.05; a second time back may be the third occurrence, which is
+  a draw, and costs half of what we are ahead by. The best move after the discount is
+  played (`own_placement` and `choose_action` in `search.py`, logged as
+  `repeat_avoided`). Nothing changes when we are not ahead. An earlier version counted
+  the (observation, move) pairs it had played and missed repetitions reached by different
+  moves: in one arena game a rook came to d5 three times from three squares and the game
+  was drawn 13 points ahead.
+
+Not modeled: the 100-ply and 1,000-ply draws, repetition inside the search tree, and exact
+visibility in the heuristic.
 
 ## Next
 

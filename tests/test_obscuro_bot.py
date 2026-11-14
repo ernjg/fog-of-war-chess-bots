@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 import fow  # noqa: E402,F401
 import chess  # noqa: E402
+from fow.obscuro.search import SearchResult  # noqa: E402
 from referee import FowBoard, fow_moves, observation  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("obscuro_bot", ROOT / "bots" / "obscuro" / "bot.py")
@@ -59,7 +60,7 @@ def test_belief_time_is_subtracted_from_the_budget(monkeypatch) -> None:
     agent = make_agent(move_time=None)
     seen = {}
 
-    def fake_search(states, moves, side, budget, rng):
+    def fake_search(states, moves, side, budget, rng, repeat_counts=None):
         seen["budget"] = budget
         return None
 
@@ -129,3 +130,42 @@ def test_legal_move_error_retries_without_en_passant(monkeypatch) -> None:
     agent.observe(observation(FowBoard(), chess.WHITE))
     monkeypatch.setattr(agent.tracker, "legal_moves", boom)
     assert chess.Move.from_uci(agent.act(100.0)) in fow_moves(FowBoard())
+
+
+def test_repeated_move_is_passed_to_search_with_its_count(monkeypatch) -> None:
+    agent = make_agent()
+    seen = []
+
+    def fake_search(states, moves, side, budget, rng, repeat_counts=None):
+        seen.append(None if repeat_counts is None else dict(zip([m.uci() for m in moves], repeat_counts)))
+        return SearchResult(chess.Move.from_uci("g1f3"), 0.5, 0.0, 1, 1)
+
+    monkeypatch.setattr(bot, "search", fake_search)
+    obs = observation(FowBoard(), chess.WHITE)
+    for _ in range(3):
+        agent.observe(obs)   # the same view three times, as when both sides shuffle
+        agent.act(100.0)
+    assert seen[0] is None
+    assert seen[1]["g1f3"] == 1 and seen[2]["g1f3"] == 2
+    assert sum(seen[2].values()) == 2
+
+
+def test_reaching_the_same_squares_by_another_move_counts_as_a_repeat(monkeypatch) -> None:
+    """In an arena game a rook came to d5 three times by three different moves and the
+    game was drawn 13 points ahead: what is counted is where our pieces end up."""
+    agent = make_agent()
+    seen = []
+
+    def fake_search(states, moves, side, budget, rng, repeat_counts=None):
+        seen.append({} if repeat_counts is None else dict(zip([m.uci() for m in moves], repeat_counts)))
+        return SearchResult(next(m for m in moves if m.uci() in ("c5d5", "d4d5", "d6d5")), 0.5, 0.0, 1, 1)
+
+    monkeypatch.setattr(bot, "search", fake_search)
+    monkeypatch.setattr(agent.belief, "observe", lambda obs, own_move=None: None)
+    for fen in ("7k/8/8/2R5/8/8/8/K7 w - - 0 1", "7k/8/8/8/3R4/8/8/K7 w - - 0 1", "7k/8/3R4/8/8/8/8/K7 w - - 0 1"):
+        agent.observe(observation(FowBoard(fen), chess.WHITE))
+        agent.last_move = None   # the rook is somewhere else each time: this is not a real game
+        agent.act(100.0)
+    assert seen[0].get("c5d5", 0) == 0
+    assert seen[1]["d4d5"] == 1 and seen[1]["d4d6"] == 0   # back where it stood, by another road
+    assert seen[2]["d6d5"] == 2
