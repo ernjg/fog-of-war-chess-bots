@@ -135,8 +135,10 @@ class Engine:
         return True
 
     def read_lines(self) -> list[str]:
-        """The complete lines available right now. End of file marks the engine dead."""
-        while not self.dead:
+        """The complete lines available right now, about MAX_BUFFER bytes of them at most:
+        an engine that never pauses its output must not keep us here. End of file marks
+        the engine dead."""
+        while not self.dead and len(self._buffer) <= MAX_BUFFER:
             try:
                 chunk = os.read(self.fd, 65536)
             except BlockingIOError:

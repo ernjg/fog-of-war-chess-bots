@@ -14,8 +14,8 @@ sys.path.insert(0, str(ROOT))
 import fow  # noqa: E402,F401
 import chess  # noqa: E402
 
-from fow.obscuro.engine import (EnginePool, Job, JobResult, cp_value, mate_value,  # noqa: E402
-                                parse_info)
+from fow.obscuro.engine import (MAX_BUFFER, EnginePool, Job, JobResult, cp_value,  # noqa: E402
+                                mate_value, parse_info)
 
 FAKE = [sys.executable, str(Path(__file__).with_name("fake_uci_engine.py"))]
 MIDDLEGAME = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
@@ -210,6 +210,28 @@ def test_mute_engine_fails_the_handshake_in_time(start) -> None:
     pool = start(2, "mute", seconds=0.4)
     assert time.monotonic() - began < 2.0
     assert pool.ready_count() == 0 and "uciok" in pool.failure
+
+
+def test_one_read_is_bounded_however_much_the_engine_writes(start, monkeypatch) -> None:
+    """An engine that never pauses its output must not keep read_lines reading: a call
+    takes about MAX_BUFFER and returns, so that the pool gets back to its deadlines."""
+    cases = ((b"x" * 65536, False),                              # no newline: dropped
+             ((b"info string chatter\n" * 3277)[:65536], True))  # lines: handed back
+    for block, kept in cases:
+        (engine,) = start(1).engines
+        reads = 0
+
+        def endless(fd: int, size: int) -> bytes:
+            nonlocal reads
+            reads += 1
+            assert reads < 100, "read_lines goes on reading for as long as the engine writes"
+            return block
+
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "read", endless)
+            lines = engine.read_lines()
+        assert reads <= MAX_BUFFER // 65536 + 1
+        assert bool(lines) == kept and engine.dead != kept
 
 
 def test_one_silent_engine_does_not_cost_the_healthy_one(start, tmp_path) -> None:
