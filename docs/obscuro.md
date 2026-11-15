@@ -254,6 +254,10 @@ enough), and point each bot at its own with `--stockfish` in a small `run.sh` of
 the same binary file share the network in memory, and a paused bot's engines then hold up
 the other bot's engine start by about a second each, which can leave it with fewer.
 
+The versions that were uploaded to the arena are kept as bots of their own, each with its
+own build. `docs/versions.md` lists them and says how to play them against the working
+bot. Leave `FOW_STOCKFISH` unset for those games.
+
 In the arena, `bots/obscuro/build.sh` compiles the source that travels in the ZIP
 (`uv run tools/package.py obscuro` copies the whole bot folder, about 80 MB zipped). It
 logs the sandbox's CPU flags, compiles with plain `g++`, three files at a time, and then
