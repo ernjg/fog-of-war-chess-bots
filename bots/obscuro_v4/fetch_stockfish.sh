@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-TAG=sf_19   # build.sh and fow/obscuro/stockfish_search.py were tested against this release
+TAG=sf_19   # build.sh and obscuro_v4/stockfish_search.py were tested against this release
 NEW=stockfish.new
 
 rm -rf "$NEW"

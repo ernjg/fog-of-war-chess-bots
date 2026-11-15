@@ -24,12 +24,12 @@ for _root in (_HERE, *_HERE.parents[1:2]):
 
 import chess  # noqa: E402
 
-from fow.obscuro.belief import Belief  # noqa: E402
-from fow.obscuro.engine import EnginePool  # noqa: E402
-from fow.obscuro.opponent import POLICY_SECONDS, OpponentPolicy  # noqa: E402
-from fow.obscuro.position_set import MAX_STATES as FULL_SET_STATES, PositionSet  # noqa: E402
-from fow.obscuro.search import move_budget, own_placement, search  # noqa: E402
-from fow.obscuro.stockfish_search import stockfish_search  # noqa: E402
+from obscuro_v4.belief import Belief  # noqa: E402
+from obscuro_v4.engine import EnginePool  # noqa: E402
+from obscuro_v4.opponent import POLICY_SECONDS, OpponentPolicy  # noqa: E402
+from obscuro_v4.position_set import MAX_STATES as FULL_SET_STATES, PositionSet  # noqa: E402
+from obscuro_v4.search import move_budget, own_placement, search  # noqa: E402
+from obscuro_v4.stockfish_search import stockfish_search  # noqa: E402
 from fow.protocol import Agent, log, run  # noqa: E402
 from uniform_random import ObservationTracker, candidates  # noqa: E402  (starter kit)
 

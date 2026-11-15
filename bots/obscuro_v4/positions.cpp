@@ -1,7 +1,7 @@
 // The set of positions consistent with everything we have seen (Obscuro's P), kept in
 // full rather than as a sample of a few hundred, which is all Python has time for.
 //
-// A helper process: the bot (fow/obscuro/position_set.py) writes one command per line on
+// A helper process: the bot (obscuro_v4/position_set.py) writes one command per line on
 // stdin and reads the answer on stdout. Every answer is one line, or a header line that
 // says how many lines follow. Nothing here decides a move; it only keeps the set.
 //

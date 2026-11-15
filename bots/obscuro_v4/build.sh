@@ -304,7 +304,7 @@ cat > "$TMP/check.py" <<'PY'
 # Prints one line, "OK ..." or "FAILED ...". Anything else means this check did not run.
 import importlib.util, os, sys, time
 binary, need = sys.argv[1], int(sys.argv[2])
-source = next(path for path in ("fow/obscuro/engine.py", "../../fow/obscuro/engine.py")
+source = next(path for path in ("obscuro_v4/engine.py", "../../obscuro_v4/engine.py")
               if os.path.isfile(path))   # the packaged layout, then the repository's
 spec = importlib.util.spec_from_file_location("obscuro_engine", source)
 engine = importlib.util.module_from_spec(spec)
@@ -326,7 +326,7 @@ good = ready >= need and scored == 20 and depth is not None
 print(("OK " if good else "FAILED ") + f"{ready} of 2 engines ready in {took:.2f}s, {scored} of 20 "
       f"opening moves scored to depth {depth} in {search:.2f}s" + (f"; {why}" if why else ""))
 PY
-[ -f fow/obscuro/engine.py ] || [ -f ../../fow/obscuro/engine.py ] || rm -f "$TMP/check.py"
+[ -f obscuro_v4/engine.py ] || [ -f ../../obscuro_v4/engine.py ] || rm -f "$TMP/check.py"
 
 if timeout -k 5 5 true >/dev/null 2>&1; then LIMITER=timeout
 elif "$PY" "$TMP/limited.py" 5 true >/dev/null 2>&1; then LIMITER=python
