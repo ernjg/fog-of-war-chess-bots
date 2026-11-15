@@ -27,6 +27,7 @@ import chess  # noqa: E402
 from fow.obscuro.belief import Belief  # noqa: E402
 from fow.obscuro.engine import EnginePool  # noqa: E402
 from fow.obscuro.opponent import POLICY_SECONDS, OpponentPolicy  # noqa: E402
+from fow.obscuro.position_set import MAX_STATES as FULL_SET_STATES, PositionSet  # noqa: E402
 from fow.obscuro.search import move_budget, own_placement, search  # noqa: E402
 from fow.obscuro.stockfish_search import stockfish_search  # noqa: E402
 from fow.protocol import Agent, log, run  # noqa: E402
@@ -39,6 +40,7 @@ BELIEF_SHARE = 0.4            # of a move's time, at most, for updating the beli
 MIN_BELIEF_STATES = 128       # the belief is not cut below this to save time
 POLICY_TIME_SHARE = 0.15      # of a move's time, at most, for judging the opponent's moves
 DEFAULT_ENGINE = _HERE / "stockfish" / "src" / "stockfish"  # where build.sh leaves it
+DEFAULT_POSITIONS = _HERE / "positions"                     # and the position-set helper
 ENGINE_START_SECONDS = 8.0    # the arena allows 15 s before "ready"
 ENGINE_RESTART_SECONDS = 3.0  # at most, on our clock, to replace an engine that died
 FALLBACK_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
@@ -47,9 +49,14 @@ FALLBACK_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
 
 class ObscuroAgent(Agent):
     def __init__(self, seed: int | None, max_states: int, move_time: float | None,
-                 engine: Path | None = None, engine_count: int = 2, weigh_belief: bool = True):
+                 engine: Path | None = None, engine_count: int = 2, weigh_belief: bool = True,
+                 positions: Path | None = None):
         self.rng = random.Random(seed)
-        self.max_states = max_states
+        self.max_states = max_states      # the cap of a belief kept in Python
+        self.positions = positions        # the position-set helper, or None to do without
+        self.belief: Belief | PositionSet | None = None
+        self.belief_ceiling = max_states  # the most states the belief in use may hold
+        self.helper_lost = False          # whether the loss of the helper has been logged
         self.move_time = move_time
         self.engine = engine              # the Stockfish binary, or None to do without
         self.engine_count = engine_count
@@ -64,7 +71,6 @@ class ObscuroAgent(Agent):
         self.side = color
         self.increment = inc
         self.tracker = ObservationTracker(color)
-        self.belief = Belief(color, self.max_states, self.rng)
         self.last_move: chess.Move | None = None
         self.plies = 0               # observations received = plies played so far + 1
         self.observe_seconds = 0.0   # belief-update time this turn; it runs on our clock
@@ -77,16 +83,49 @@ class ObscuroAgent(Agent):
         self.stood: Counter[str] = Counter()
         log(f"obscuro: playing {'white' if color else 'black'} at {base:g}+{inc:g}")
         self.close()
+        self.belief = self._new_belief(color)
         self.pool = self._start_engines()
 
     def close(self) -> None:
-        """Stop the engines. Safe to call at any time, more than once."""
+        """Stop the engines and the helper. Safe to call at any time, more than once."""
         pool, self.pool = self.pool, None
-        if pool is not None:
+        for stop in (getattr(pool, "close", None), getattr(self.belief, "close", None)):
+            if stop is not None:
+                try:
+                    stop()
+                except Exception:
+                    traceback.print_exc(file=sys.stderr)
+
+    def _new_belief(self, color: bool) -> Belief | PositionSet:
+        """The set of possible positions: kept in full by the compiled helper if there is
+        one that works, and otherwise by Python, capped at a number it has the time for."""
+        self.helper_lost = False
+        if self.positions is not None and self.positions.is_file():
+            started = time.monotonic()
             try:
-                pool.close()
-            except Exception:
-                traceback.print_exc(file=sys.stderr)
+                belief = PositionSet(color, [str(self.positions)], FULL_SET_STATES, self.rng)
+            except Exception as error:
+                log(f"obscuro: the position-set helper did not start ({error}); "
+                    "keeping the set in Python")
+            else:
+                log(f"obscuro: position-set helper ready in {time.monotonic() - started:.2f}s, "
+                    f"binary {self.positions}")
+                self.belief_ceiling = FULL_SET_STATES
+                return belief
+        elif self.positions is not None:
+            log(f"obscuro: no position-set helper at {self.positions}; keeping the set in Python")
+        self.belief_ceiling = self.max_states
+        return Belief(color, self.max_states, self.rng)
+
+    def _note_helper(self) -> None:
+        """Say once when the helper has been lost; the set is then a Python belief."""
+        failure = getattr(self.belief, "failure", "")
+        if failure and not self.helper_lost:
+            self.helper_lost = True
+            self.belief_ceiling = self.max_states
+            self.state_seconds = None  # Python's cost per state has yet to be measured
+            log(f"obscuro: position-set helper lost ({failure}); carrying on in Python "
+                f"from {len(self.belief)} states")
 
     def _start_engines(self) -> EnginePool | None:
         """Stockfish, if there is a working one. Whatever goes wrong here, the bot still
@@ -131,11 +170,13 @@ class ObscuroAgent(Agent):
                 raise RuntimeError("belief was unusable; rebuilding from the observation")
             self.belief.observe(obs, own_move=own_move,
                                 policy=None if own_move is not None else self._policy())
+            self._note_helper()
             seconds, states = self.belief.update_cost
             if own_move is None and states >= MIN_BELIEF_STATES:  # enough to measure by
                 self.state_seconds = seconds / states
         except Exception:
             self._rebuild_belief(obs, to_move)
+            self._note_helper()
         self.observe_seconds += time.monotonic() - started
 
     def _policy(self) -> OpponentPolicy | None:
@@ -208,14 +249,17 @@ class ObscuroAgent(Agent):
         if self.move_time:
             return
         self.move_seconds = move_budget(max(left, 0.0), self.increment)
+        if isinstance(self.belief, PositionSet):
+            self.belief.allowance = BELIEF_SHARE * self.move_seconds  # the helper stops there
         if self.state_seconds is None or not self.belief_ok:
             return
         allowed = BELIEF_SHARE * self.move_seconds
         affordable = int(allowed / self.state_seconds)
-        target = min(self.max_states, max(MIN_BELIEF_STATES, affordable))
+        target = min(self.belief_ceiling, max(MIN_BELIEF_STATES, affordable))
         cap = self.belief.max_states
-        if target < cap or target >= min(1.5 * cap, self.max_states):
+        if target < cap or target >= min(1.5 * cap, self.belief_ceiling):
             self.belief.limit(target)
+            self._note_helper()
 
     def _supported(self, moves: list[chess.Move]) -> list[chess.Move]:
         """``moves`` without the en passant captures that no belief state allows.
@@ -231,7 +275,7 @@ class ObscuroAgent(Agent):
                     and chess.square_file(move.from_square) != chess.square_file(move.to_square)]
         if not doubtful or not self.belief_ok:
             return moves
-        known = {state.ep_square for state in self.belief.states}
+        known = self.belief.ep_squares()
         dropped = [move for move in doubtful if move.to_square not in known]
         if not dropped or len(dropped) == len(moves):
             return moves
@@ -341,7 +385,7 @@ class ObscuroAgent(Agent):
         likely states those weights amount to."""
         size = f"{len(self.belief)}{'' if self.belief.exact else '~'}"
         cap = self.belief.max_states
-        if cap < self.max_states:
+        if cap < self.belief_ceiling:
             size = f"{size}/{cap}"
         return f"{size} ess={self.belief.effective_size():.0f}" if self.belief.weighted else size
 
@@ -404,11 +448,15 @@ def main() -> None:
     parser.add_argument("--equal-odds", action="store_true",
                         help="count every unseen opponent move as equally likely, instead of "
                              "weighting the belief by Stockfish's judgement of the moves")
+    parser.add_argument("--positions", default=os.environ.get("FOW_POSITIONS", str(DEFAULT_POSITIONS)),
+                        help="position-set helper binary (default: $FOW_POSITIONS, else the one "
+                             "build.sh makes); 'off' keeps the set in Python, capped at --max-states")
     args = parser.parse_args()
-    off = args.stockfish.strip().lower() in ("", "off", "none", "0")
-    engine = None if off else Path(args.stockfish).expanduser().resolve()
+    off = ("", "off", "none", "0")
+    engine = None if args.stockfish.strip().lower() in off else Path(args.stockfish).expanduser().resolve()
+    positions = None if args.positions.strip().lower() in off else Path(args.positions).expanduser().resolve()
     agent = ObscuroAgent(args.seed, args.max_states, args.move_time, engine, max(1, args.engines),
-                         weigh_belief=not args.equal_odds)
+                         weigh_belief=not args.equal_odds, positions=positions)
     atexit.register(agent.close)
     run(agent)
 

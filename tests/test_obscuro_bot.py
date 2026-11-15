@@ -29,7 +29,11 @@ def make_agent(move_time: float | None = 0.05) -> "bot.ObscuroAgent":
 
 
 def play(agent, plies: int, on_turn=None) -> FowBoard:
-    """Drive ``agent`` as White against random replies; every move must be FoW-legal."""
+    """Drive ``agent`` as White against random replies; every move must be FoW-legal.
+
+    Stops early, with Black to move, if Black has no safe reply left (the agent has won).
+    Which game is played depends on how much search the agent's time buys, so on a busy
+    machine that can happen within a few moves."""
     rng = random.Random(5)
     board = FowBoard()
     for _ in range(plies):
@@ -48,6 +52,8 @@ def play(agent, plies: int, on_turn=None) -> FowBoard:
                 if not board.is_attacked_by(chess.WHITE, board.king(chess.BLACK)):
                     safe.append(move)
                 board.pop()
+            if not safe:
+                break
             move = rng.choice(safe)
         board.push(move)
     return board
@@ -544,3 +550,86 @@ def test_reset_and_close_stop_the_engines() -> None:
     agent.close()
     agent.close()
     assert second.closed and agent.pool is None
+
+
+# ---------------------------------------------------------------------------------------
+# The set of positions kept by the compiled helper.
+
+def helped_agent(helper: str, move_time: float | None = 0.05) -> "bot.ObscuroAgent":
+    agent = bot.ObscuroAgent(seed=1, max_states=200, move_time=move_time, positions=Path(helper))
+    agent.reset(chess.WHITE, 180, 2)
+    return agent
+
+
+def test_the_bot_keeps_its_set_in_the_helper_when_it_has_one(helper, capsys) -> None:
+    from fow.obscuro.position_set import MAX_STATES, PositionSet
+    agent = helped_agent(helper)
+    try:
+        assert isinstance(agent.belief, PositionSet) and agent.belief.fallback is None
+        assert agent.belief_ceiling == MAX_STATES and agent.belief.max_states == MAX_STATES
+        assert "position-set helper ready" in capsys.readouterr().err
+        board = play(agent, 24)
+        if board.turn == chess.WHITE:                    # not if the game ended early
+            agent.observe(observation(board, chess.WHITE))   # the last reply, which play() leaves unseen
+        assert agent.belief.fallback is None and agent.fallbacks == 0 and agent.belief_ok
+        # The set is complete, so the true position is in it: among the states Python sees
+        # whenever it sees them all.
+        assert agent.belief.exact
+        if len(agent.belief) == len(agent.belief.states):
+            assert any(state.board_fen() == board.board_fen() for state in agent.belief.states)
+        assert agent._belief_size().split()[0].rstrip("~").isdigit()   # no "/cap": the ceiling is not lowered
+        process = agent.belief.helper.proc
+    finally:
+        agent.close()
+    assert process.poll() is not None                # the helper is stopped with the bot
+    agent.reset(chess.BLACK, 180, 2)                 # and a new game starts a new one
+    try:
+        assert isinstance(agent.belief, PositionSet) and agent.belief.helper.proc is not process
+    finally:
+        agent.close()
+
+
+def test_without_a_helper_the_set_is_kept_in_python(tmp_path, capsys) -> None:
+    from fow.obscuro.belief import Belief
+    agent = bot.ObscuroAgent(seed=1, max_states=200, move_time=0.05, positions=tmp_path / "missing")
+    agent.reset(chess.WHITE, 180, 2)
+    assert isinstance(agent.belief, Belief) and agent.belief_ceiling == 200
+    assert "no position-set helper at" in capsys.readouterr().err
+    agent = make_agent()                             # none asked for: nothing to report
+    assert isinstance(agent.belief, Belief) and "position-set" not in capsys.readouterr().err
+    not_a_helper = tmp_path / "broken"
+    not_a_helper.write_text("#!/bin/sh\nexit 3\n")
+    not_a_helper.chmod(0o755)
+    agent = bot.ObscuroAgent(seed=1, max_states=200, move_time=0.05, positions=not_a_helper)
+    agent.reset(chess.WHITE, 180, 2)
+    assert isinstance(agent.belief, Belief)
+    assert "the position-set helper did not start" in capsys.readouterr().err
+    play(agent, 6)
+
+
+def test_a_helper_lost_in_mid_game_is_reported_once_and_the_game_goes_on(helper, capsys) -> None:
+    agent = helped_agent(helper)
+    try:
+        def kill_at_move_four(agent, board):
+            if board.fullmove_number == 4:
+                agent.belief.helper.proc.kill()
+                agent.belief.helper.proc.wait(timeout=5)
+
+        play(agent, 20, on_turn=kill_at_move_four)
+        log_text = capsys.readouterr().err
+        assert log_text.count("position-set helper lost") == 1 and "carrying on in Python" in log_text
+        assert agent.belief.fallback is not None and agent.belief_ok and agent.fallbacks == 0
+        assert agent.belief_ceiling == 200           # the Python belief's cap, from here on
+    finally:
+        agent.close()
+
+
+def test_the_helper_is_told_how_long_an_update_may_take(helper) -> None:
+    agent = helped_agent(helper, move_time=None)
+    try:
+        agent.observe(observation(FowBoard(), chess.WHITE))
+        agent.act(60.0)
+        assert agent.belief.allowance == pytest.approx(bot.BELIEF_SHARE * agent.move_seconds)
+        assert 0 < agent.belief.allowance < 0.5 * agent.move_seconds
+    finally:
+        agent.close()

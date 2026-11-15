@@ -58,16 +58,41 @@ CASES = {
                                       ["stockfish did not start"]),
     "obscuro with stockfish": ("obscuro", [*OBSCURO, "0.3", "--stockfish", STOCKFISH], None,
                                ["stockfish ready: 2 of 2 engines", "obscuro: sf "]),
+    # The set of positions kept by the compiled helper (HELPER is replaced by its path).
+    "obscuro with the helper": ("obscuro", [*OBSCURO, "0.3", "--positions", "HELPER"], "",
+                                ["position-set helper ready", "obscuro: sf "]),
+    "obscuro with the helper, no engine": ("obscuro", [*OBSCURO, "0.05", "--stockfish", "off",
+                                                       "--positions", "HELPER"], None,
+                                           ["position-set helper ready", "stockfish is switched off"]),
+    "obscuro, the helper stops answering": ("obscuro", [*OBSCURO, "0.05", "--stockfish", "off",
+                                                        "--positions", "STUCK"], None,
+                                            ["position-set helper ready", "position-set helper lost"]),
+    "obscuro, no helper built": ("obscuro", [*OBSCURO, "0.05", "--stockfish", "off",
+                                             "--positions", "no/such/binary"], None,
+                                 ["no position-set helper at"]),
 }
+# A stand-in for the helper that answers its first command and nothing after it.
+STUCK_HELPER = """#!/bin/bash
+echo "ok size=1 exact=1 weighted=0 ess=1.000 ep=0 parents=0 expanded=0 kids=0 ms=0.00"
+exec sleep 600
+"""
 
 
 @pytest.mark.parametrize("case", sorted(CASES))
-def test_full_game_stdout_is_protocol_only(case: str, tmp_path: Path) -> None:
+def test_full_game_stdout_is_protocol_only(case: str, tmp_path: Path, request) -> None:
     bot, args, faults, expected_log = CASES[case]
     if case == "obscuro with stockfish" and not Path(STOCKFISH).is_file():
         pytest.skip("FOW_STOCKFISH is not a Stockfish binary")
     env = dict(os.environ, PYTHON=sys.executable)
     env.pop("FOW_STOCKFISH", None)  # each case names its own engine
+    env.pop("FOW_POSITIONS", None)  # and its own helper
+    if "HELPER" in args:
+        args = [request.getfixturevalue("helper") if arg == "HELPER" else arg for arg in args]
+    if "STUCK" in args:
+        stuck = tmp_path / "stuck"
+        stuck.write_text(STUCK_HELPER)
+        stuck.chmod(0o755)
+        args = [str(stuck) if arg == "STUCK" else arg for arg in args]
     if faults is not None:  # a scripted engine, started through a wrapper the bot can execute
         wrapper = tmp_path / "fakefish"
         wrapper.write_text(f'#!/bin/bash\nexec "{sys.executable}" "{FAKE_ENGINE}"\n')

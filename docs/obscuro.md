@@ -10,10 +10,12 @@ cannot answer, it uses the PCFR+ search described first. Its first stderr lines 
 
 ## One move (PCFR+ search)
 
-1. **Belief** (`belief.py`). Keep P, every position consistent with our observations,
-   filtered exactly after each ply and capped at 1,500 states. With Stockfish running,
-   each state also has a weight: how likely the opponent's unseen moves that lead to it
-   are (see [Weighted belief](#weighted-belief)).
+1. **Belief** (`positions.cpp`, `position_set.py`; `belief.py`). Keep P, every position
+   consistent with our observations, filtered exactly after each ply. A compiled helper
+   keeps it in full, up to 200,000 states (see [The position set](#the-position-set));
+   without the helper Python keeps it, capped at 1,500. With Stockfish running, each
+   state also has a weight: how likely the opponent's unseen moves that lead to it are
+   (see [Weighted belief](#weighted-belief)).
 2. **Subgame** (`subgame.py`). Sample up to 200 roots from P and build a depth-2 game:
    chance picks a root, we move (one infoset, since every root looks the same to us),
    the opponent replies (infosets keyed by what it sees), leaves are scored by the heuristic.
@@ -119,28 +121,28 @@ So each state has a weight (`belief.py`, `opponent.py`):
   lightest) use equal odds. It is timed as part of the belief update, so the cap that
   follows the clock makes room for it.
 
-Measured by replaying our side of 100 public arena games (2,667 decisions) without
-weights, as before, and with them, at a cap of 300 states and half a second per search,
-against the true boards:
+Measured by replaying our side of 100 public arena games (2,675 decisions) against the
+true boards, with a Python belief capped at 800 states, without weights and with them.
+Each decision is searched for half a second from both beliefs; the engines' memory is
+cleared before every search and the order alternates, so that neither profits from what
+the other has just searched. (An earlier comparison did not do that and flattered whichever
+was searched second.)
 
 | | Without weights | With weights |
 | --- | --- | --- |
-| True position is in the belief | 34% | 51% |
-| Probability the belief gives it (mean) | 2.6% | 5.2% |
-| Value lost by the chosen move (mean, true board, Stockfish depth 10) | 0.047 | 0.039 |
-| ... against teams rated 1600 and up (46 games) | 0.051 | 0.037 |
-| ... against the others (54 games) | 0.043 | 0.040 |
-| Chosen moves that lose more than 0.3 | 84 | 61 |
-| Chosen moves that lose the king | 55 | 51 |
+| True position is in the belief | 42% | 63% |
+| Probability the belief gives it (mean) | 2.7% | 6.0% |
+| Value lost by the chosen move (mean, true board, Stockfish depth 10) | 0.048 | 0.041 |
+| ... against teams rated 1600 and up (46 games) | 0.050 | 0.040 |
+| ... against the others (54 games) | 0.045 | 0.043 |
+| Chosen moves that lose more than 0.3 | 83 | 62 |
+| Chosen moves that lose the king | 50 | 47 |
 
-The difference in the third row is three and a half standard errors, counting each game
-as one observation; the total was better in 72 games and worse in 28 (against the stronger
-teams, 40 and 6). Against the weaker teams there is no difference to speak of, in either
-direction. About 40% of the gain comes from which states the cap keeps and the rest from
-counting them by weight in the search. Mixing the weights half and half with equal odds
-in the search, or flattening them, was no better. At a cap of 800 states, with the policy
-stopped after two thirds of the states as it would be on a slower machine, the same
-replay gives 0.047 against 0.042, and 83 against 66 moves that lose more than 0.3.
+The difference in the third row is two and a half standard errors, counting each game as
+one observation; the total was better in 62 games and worse in 34 (against the stronger
+teams, 37 and 9). Against the weaker teams there is no difference to speak of, in either
+direction. Mixing the weights half and half with equal odds in the search, or flattening
+them, was no better.
 
 What the weights do not fix: they judge the opponent's moves as ordinary chess would. A
 check from a square we cannot see is a poor move there if it can be blocked, so it gets a
@@ -158,6 +160,56 @@ last move and answered for 412 in the time it had; the others used equal odds.
 `--equal-odds` switches the weights off. The temperature, the mix and the time limits are
 at the top of `opponent.py`; the shares used when cutting and topping up at the top of
 `belief.py`.
+
+### The position set
+
+Obscuro keeps every position consistent with what it has seen. In Python the update costs
+about a millisecond a position here and four to five times that in the arena, so
+`belief.Belief` holds a few hundred and has to sample, and the true position is then often
+not among them. `positions.cpp` is the same update in C++, a few microseconds a position:
+25,000 positions in 60 ms here. It runs as a helper process, like the engines, and keeps
+the set up to 200,000 states; a larger one is cut down as before (the likeliest states
+first).
+
+- **The rules are the referee's.** The helper generates python-chess's pseudo-legal moves,
+  castles without any attack test, and sees for a side its own squares and every square
+  one of its pieces could move to. The tests compare it with the referee on 2,000 positions
+  (the moves in order, what each side sees, the position after every move; 5.5 million such
+  checks were run once, without a difference) and with `Belief` on whole games: after
+  every ply the two hold the same positions with the same weights. `positions selftest`
+  repeats a small part wherever it is built, and `build.sh` keeps the binary only if that
+  passes.
+- **What Python sees.** `position_set.PositionSet` has `Belief`'s interface. Its `states`
+  are the whole set while it has at most 256 states, and otherwise 256 draws by weight
+  (each state once, with its number of draws as its weight): what the search would have
+  drawn itself. `len()` is the size of the full set, and that is the `|P|` in the log.
+- **The policy** is asked about the 512 heaviest states (it costs Python a quarter of a
+  millisecond a state); the others get equal odds, as they did when its time ran out.
+- **What `Belief` still does**, on what Python has of the set: rebuilding a set that an
+  observation has emptied and topping up a thin one. Both can only happen after the cap
+  has cut the set, which is rare now.
+- **If the helper is lost** (no answer in time, or it exits), the game goes on with a
+  `Belief` started from what Python last saw, and the log says so once. If it was never
+  built, or does not start, the bot says so and uses `Belief` from the first move.
+
+The same replay as above, with a third belief: the full set, weighted by the same policy.
+
+| | No weights, Python | Weights, Python (800) | Weights, full set |
+| --- | --- | --- | --- |
+| True position is in the set | 42% | 63% | 93% |
+| Probability the set gives it (mean) | 2.7% | 6.0% | 8.3% |
+| Value lost by the chosen move (mean) | 0.048 | 0.041 | 0.038 |
+| Chosen moves that lose more than 0.3 | 83 | 62 | 51 |
+| Chosen moves that lose the king | 50 | 47 | 46 |
+| Time to update, per move, on this machine | 0.30 s | 0.39 s | 0.21 s |
+
+Against the capped belief with weights the full set's gain in value is two standard errors
+(better in 51 games, worse in 41); against no weights, nearly five. It does not lose fewer
+kings. Half of those are lost in the 15% of decisions where even 200,000 states are not
+the whole set, and in the others the true position is there but its weight is small: the
+weights still judge a hidden attack as ordinary chess would. That is the search's part
+(see [Next](#next)). The update is also the cheapest of the three, and in the arena, where
+Python is slower and C++ is not, by a much wider margin.
 
 ### Setting it up
 
@@ -183,6 +235,14 @@ On a Mac whose linker cannot find the SDK (`ld: ... tapi` errors), run
 for rehearsing `build.sh`. Without `FOW_STOCKFISH` the tests that need the real engine are
 skipped.
 
+The position-set helper is one file with nothing to fetch. The tests build it themselves
+(and are skipped where there is no C++ compiler). To play with it locally:
+
+```sh
+c++ -O2 -std=c++17 -o /tmp/positions bots/obscuro/positions.cpp
+export FOW_POSITIONS=/tmp/positions                    # 'off' keeps the set in Python
+```
+
 For local games between two bots that both use Stockfish, give each bot its own folder
 with a copy of the binary and of `nn-*.nnue` beside it (a hard link to the network file is
 enough), and point each bot at its own with `--stockfish` in a small `run.sh` of its own;
@@ -198,15 +258,22 @@ starts the binary through the bot's own engine code and has it score the startin
 without AVX2) or a build that does not compile is reported as not built. No step runs past
 the 5-minute limit.
 
+Before Stockfish, `build.sh` compiles `positions.cpp` (a few seconds) and runs its
+self-test; the binary is kept only if that passes.
+
 The script exits 0 whatever happens, because without Stockfish the bot still plays, on the
-PCFR+ search. A version like that would be accepted, and its results would say nothing
-about Stockfish. To have it rejected instead, create an empty file
-`bots/obscuro/REQUIRE_STOCKFISH` before packaging: the build then fails unless both engines
-start and search, and its log says near the top that the file is present. Or upload with
-"Activate automatically" unchecked and activate after reading the log.
+PCFR+ search, and without the helper it keeps its set in Python. A version like that would
+be accepted, and its results would say nothing about either. To have it rejected instead,
+create empty files `bots/obscuro/REQUIRE_STOCKFISH` and `bots/obscuro/REQUIRE_POSITIONS`
+before packaging: the build then fails unless both engines start and search, and unless
+the helper was built, and its log says near the top which of the files are present. Or
+upload with "Activate automatically" unchecked and activate after reading the log.
 
-After an upload, check two things:
+After an upload, check three things:
 
+- The build log has a line `build: POSITION SET OK: g++, ...s; selftest ok: ...`
+  (`build: POSITION SET NOT BUILT: ...` gives the reason), and a game's stderr begins with
+  `obscuro: position-set helper ready in ...s`.
 - The build log ends with `build: STOCKFISH OK: ...; 2 of 2 engines ready in ...s, 20 of 20
   opening moves scored to depth ...`. `build: STOCKFISH NOT BUILT: ...` gives the reason.
 - In a game's private stderr the move lines read `obscuro: sf ... eng=2 ...`. Lines without
@@ -234,7 +301,7 @@ per physical core in the arena).
 
 | | Paper | This bot |
 | --- | --- | --- |
-| Belief | Exact P, up to 10^6 states | Capped at 1,500 (fewer when the clock is short), the likeliest states first; once sampled, topped up towards 128 states where the fog allows |
+| Belief | Exact P, up to 10^6 states | Exact up to 200,000 states (compiled helper; fewer when the clock is short), then the likeliest states first; once sampled, topped up towards 128 states where the fog allows. Without the helper, capped at 1,500 |
 | Root weights | From the opponent strategy of the previous search, mixed half and half with equal odds | From Stockfish's one-ply scores of the opponent's moves, mixed 80/20 with equal odds (PCFR+ search: none) |
 | Roots | KLUSS: our infoset plus histories the opponent confuses with it | Drawn from P each turn, by weight. Stockfish search: states with our king attacked count six times |
 | Opponent infosets | Full observation history | PCFR+ search: current observation and legal replies. Stockfish search: the opponent knows the position |

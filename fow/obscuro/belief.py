@@ -91,6 +91,10 @@ class Belief:
         squares = sum(weight * weight for weight in weights)
         return sum(weights) ** 2 / squares if squares > 0 else 0.0
 
+    def ep_squares(self) -> set[int]:
+        """The squares a pawn has just skipped in some state: where en passant may be possible."""
+        return {state.ep_square for state in self.states if state.ep_square is not None}
+
     def observe(self, obs: str, own_move: chess.Move | None = None,
                 policy: Policy | None = None) -> None:
         """Filter with the observation after one ply; ``own_move`` is None unless we played it.
