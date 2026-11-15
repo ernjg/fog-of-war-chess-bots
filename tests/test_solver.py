@@ -73,3 +73,13 @@ def test_search_returns_a_legal_move_from_the_start() -> None:
     moves = list(board.generate_pseudo_legal_moves())
     result = search([board], moves, chess.WHITE, budget=0.2, rng=random.Random(0))
     assert result is not None and result.move in moves
+
+
+def test_search_answers_when_every_line_is_already_decided() -> None:
+    """Every move of White's loses the king at once, so the game has no opponent infoset.
+    The search must still return a move (it used to raise on the empty infoset list)."""
+    from referee import fow_moves
+    board = FowBoard("4k3/4r3/8/8/8/8/4q3/R3K3 w - - 0 1")
+    moves = fow_moves(board)
+    result = search([board], moves, chess.WHITE, 0.05, random.Random(0))
+    assert result is not None and result.move in moves and result.value == -1.0

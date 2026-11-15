@@ -361,6 +361,50 @@ def test_walk_in_fog_leaves_the_square_behind_a_double_step_empty() -> None:
     assert onto_d7[True] == 0 and onto_d7[False] > 20
 
 
+def test_a_repair_does_not_count_a_piece_twice(monkeypatch) -> None:
+    """The black queen comes into view on h4. Every state had guessed it on d8, out of
+    sight behind the bishop, so none has a successor with it on h4 and the set is rebuilt.
+    The guess on d8 must go: with two queens and eight pawns no state would be a position
+    Stockfish takes, and its search would be off until the material changed."""
+    from fow.obscuro.stockfish_search import engine_accepts
+    guess = FowBoard("rnbqk2r/ppppbppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 1")
+    truth = FowBoard("rnbqkbnr/ppp2pp1/3p3p/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 1")
+    before = observation(truth, chess.WHITE)
+    assert observation(guess, chess.WHITE) == before  # the two cannot be told apart
+    belief = sampled_belief(chess.WHITE, [guess.copy(stack=False)])
+    truth.push_uci("d8h4")
+    obs = observation(truth, chess.WHITE)
+    assert obs[chess.H4] == "q" and obs[chess.D8] == "?"
+    belief.observe(obs)
+    assert belief.repairs == 1 and len(belief) > 1
+    for state in belief.states:
+        assert len(state.pieces(chess.QUEEN, chess.BLACK)) == 1
+        assert state.piece_at(chess.H4) == chess.Piece(chess.QUEEN, chess.BLACK)
+        assert len(state.pieces(chess.PAWN, chess.BLACK)) == 8
+        assert observation(state, chess.WHITE) == obs
+        assert engine_accepts(state)
+
+
+def test_a_repair_keeps_the_material_possible() -> None:
+    """Whatever is projected onto whatever: no more opponent pieces of a kind than the old
+    state had, unless we see them all, and never more than a game can produce."""
+    from fow.obscuro.stockfish_search import engine_accepts
+    rng = random.Random(12)
+    boards = [board.copy(stack=False) for seed in range(8) for board, _, _ in random_game(seed, plies=60)]
+    possible = 0
+    for _ in range(500):
+        guess, truth = rng.choice(boards), rng.choice(boards)
+        side = truth.turn
+        obs = observation(truth, side)
+        fixed = project(guess, obs, side, side)
+        for kind in (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN):
+            now = fixed.pieces(kind, not side)
+            seen = [square for square in now if obs[square] != "?"]
+            assert len(now) <= max(len(guess.pieces(kind, not side)), len(seen))
+        possible += engine_accepts(fit_to_view(fixed, obs, side, rng))
+    assert possible >= 490  # the rest are states where a king could be taken
+
+
 def test_limit_cuts_the_set_and_marks_it_a_sample() -> None:
     belief = Belief(chess.WHITE, max_states=1500, rng=random.Random(4))
     belief.observe(observation(FowBoard(), chess.WHITE))
