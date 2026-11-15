@@ -11,7 +11,9 @@ cannot answer, it uses the PCFR+ search described first. Its first stderr lines 
 ## One move (PCFR+ search)
 
 1. **Belief** (`belief.py`). Keep P, every position consistent with our observations,
-   filtered exactly after each ply and capped at 1,500 states.
+   filtered exactly after each ply and capped at 1,500 states. With Stockfish running,
+   each state also has a weight: how likely the opponent's unseen moves that lead to it
+   are (see [Weighted belief](#weighted-belief)).
 2. **Subgame** (`subgame.py`). Sample up to 200 roots from P and build a depth-2 game:
    chance picks a root, we move (one infoset, since every root looks the same to us),
    the opponent replies (infosets keyed by what it sees), leaves are scored by the heuristic.
@@ -22,10 +24,13 @@ cannot answer, it uses the PCFR+ search described first. Its first stderr lines 
 
 Step 1 is the same. Steps 2 to 4 are replaced (`stockfish_search.py`, `engine.py`):
 
-2. **Scan.** On up to 256 sampled states, split our moves into orthodox-legal moves, moves
+2. **Scan.** Draw 256 states from P in proportion to their weights; a state drawn several
+   times is looked at once and counts that many times. (Without weights: every state once,
+   in random order, up to 256.) On each, split our moves into orthodox-legal moves, moves
    that leave our king capturable there (an immediate loss), and castling out of or through
    attack (legal only in Fog of War).
-3. **Score.** Two Stockfish processes search up to 64 of those states with MultiPV, which
+3. **Score.** Two Stockfish processes search up to 64 of those states, the ones drawn most
+   often first, with MultiPV, which
    gives every orthodox-legal move a value on each state: `tanh(centipawns / 600)`, the
    paper's scale, plus a small term that keeps rising so that the larger of two winning
    scores still counts for more. They share the move's time equally and report the deepest
@@ -42,15 +47,18 @@ opponent as knowing the position, and Stockfish does the same, only deeper and w
 evaluation. What neither search has is the paper's reasoning about what the opponent does
 not know about *our* pieces (KLUSS roots).
 
-Why attacked states count six times: P treats every unseen opponent move as equally likely,
-but an opponent who can attack our king out of sight usually does. Replaying 28 games (1,053
+Why attacked states count six times: an opponent who can attack our king out of sight
+usually does, more often than P allows for. Replaying 28 games (1,053
 decisions) against the true boards, the plain share underestimated the chance of losing the
 king two to four times over; when 1 to 5% of the states had our king attacked, it really was
 attacked 15 to 25% of the time. A weight of 6 on those states makes the predicted number of
 lost kings match the actual number. When no state has the king attacked, it never was: none
 of the 31,389 moves given zero risk lost the king. On 34 later games (1,965 decisions) that
 had no part in choosing it, a weight near 4.5 matches the count, and between 1 and 12 the
-quality of the chosen moves changes by a few percent at most, so the 6 was kept.
+quality of the chosen moves changes by a few percent at most, so the 6 was kept. (Those
+replays were made without weights. With a weighted belief the share is closer to the
+truth and a factor of 2 would match the count; the 6 stays, for the reason given at the
+end of [Weighted belief](#weighted-belief).)
 
 What Stockfish is not trusted with:
 
@@ -79,6 +87,77 @@ What Stockfish is not trusted with:
   time; if that is under 0.1 s the fallback move is played. The log says which.
 - **Reports after "stop".** A search stopped mid-iteration prints a last report that mixes
   depths and can contain placeholder scores. Only completed iterations are used.
+
+### Weighted belief
+
+P says which positions are possible, not which are likely. Counting them all alike amounts
+to assuming that the opponent plays its unseen moves at random. In one arena game the bot
+recaptured on d4 with a knight and lost it to the queen: the opponent had retreated the
+queen to d8 and brought a knight to c6, two natural moves, but in P each was one move
+among thirty.
+
+So each state has a weight (`belief.py`, `opponent.py`):
+
+- **Where it comes from.** After each opponent move, Stockfish scores every move the
+  opponent had, one ply deep, in each state that was possible before it. A softmax turns
+  the scores into odds (temperature 0.06 on the value scale, about a third of a pawn),
+  mixed 80/20 with equal odds so that no move is ruled out. A state's weight is its
+  parent's weight times the odds of the move, added up over all the ways to reach it; a
+  test compares the result with a count over every sequence of unseen moves. A state in
+  which the opponent could have taken our king, and did not, keeps 2% of its weight.
+- **What it models.** Good play, not any particular opponent, and it judges the moves as
+  if the opponent saw the whole board. Obscuro gets its weights from the opponent strategy
+  that its previous search computed, mixed half and half with equal odds; this is the
+  same idea without the search tree.
+- **Where it is used.** The search draws its states by weight (above). When the set has to
+  be cut to the cap, the heaviest three quarters of the cap are kept and the rest is drawn
+  at random from the other states, each drawn state's weight scaled up to stand for the
+  ones not drawn, so that unlikely states keep their share. States a top-up adds
+  (`replenish`) are grown from likely states and get a quarter of the weight between them.
+- **What it costs.** A third of a millisecond per state on the development machine, and
+  per move at most 0.5 s and 15% of the move's time; states the engines did not get to (the
+  lightest) use equal odds. It is timed as part of the belief update, so the cap that
+  follows the clock makes room for it.
+
+Measured by replaying our side of 100 public arena games (2,667 decisions) without
+weights, as before, and with them, at a cap of 300 states and half a second per search,
+against the true boards:
+
+| | Without weights | With weights |
+| --- | --- | --- |
+| True position is in the belief | 34% | 51% |
+| Probability the belief gives it (mean) | 2.6% | 5.2% |
+| Value lost by the chosen move (mean, true board, Stockfish depth 10) | 0.047 | 0.039 |
+| ... against teams rated 1600 and up (46 games) | 0.051 | 0.037 |
+| ... against the others (54 games) | 0.043 | 0.040 |
+| Chosen moves that lose more than 0.3 | 84 | 61 |
+| Chosen moves that lose the king | 55 | 51 |
+
+The difference in the third row is three and a half standard errors, counting each game
+as one observation; the total was better in 72 games and worse in 28 (against the stronger
+teams, 40 and 6). Against the weaker teams there is no difference to speak of, in either
+direction. About 40% of the gain comes from which states the cap keeps and the rest from
+counting them by weight in the search. Mixing the weights half and half with equal odds
+in the search, or flattening them, was no better. At a cap of 800 states, with the policy
+stopped after two thirds of the states as it would be on a slower machine, the same
+replay gives 0.047 against 0.042, and 83 against 66 moves that lose more than 0.3.
+
+What the weights do not fix: they judge the opponent's moves as ordinary chess would. A
+check from a square we cannot see is a poor move there if it can be blocked, so it gets a
+low weight; here it is a strong move, because we may not answer it. That is why the
+number of kings lost hardly changes, and why states with our king attacked still count
+six times: with a factor of 2 the weighted search twice lost its king, in eight local
+games as White against the previous version, to a queen check on the e-file that the
+weights put at 2%. Obscuro has no such rule and needs none: its search over the whole
+set of positions finds for itself that a hidden check is strong (see [Next](#next)).
+
+In a move line, `ess=57` after `|P|=...` is the effective number of states: the size of
+the set when all weigh the same, about 1 when one state has nearly all the weight. At the
+end, `policy=412/650` says that Stockfish was asked about 650 states after the opponent's
+last move and answered for 412 in the time it had; the others used equal odds.
+`--equal-odds` switches the weights off. The temperature, the mix and the time limits are
+at the top of `opponent.py`; the shares used when cutting and topping up at the top of
+`belief.py`.
 
 ### Setting it up
 
@@ -155,8 +234,9 @@ per physical core in the arena).
 
 | | Paper | This bot |
 | --- | --- | --- |
-| Belief | Exact P, up to 10^6 states | Capped at 1,500 by uniform subsampling (fewer when the clock is short); once sampled, topped up towards 128 states where the fog allows |
-| Roots | KLUSS: our infoset plus histories the opponent confuses with it | Uniform sample of P each turn. Stockfish search: states with our king attacked count six times |
+| Belief | Exact P, up to 10^6 states | Capped at 1,500 (fewer when the clock is short), the likeliest states first; once sampled, topped up towards 128 states where the fog allows |
+| Root weights | From the opponent strategy of the previous search, mixed half and half with equal odds | From Stockfish's one-ply scores of the opponent's moves, mixed 80/20 with equal odds (PCFR+ search: none) |
+| Roots | KLUSS: our infoset plus histories the opponent confuses with it | Drawn from P each turn, by weight. Stockfish search: states with our king attacked count six times |
 | Opponent infosets | Full observation history | PCFR+ search: current observation and legal replies. Stockfish search: the opponent knows the position |
 | Subgame safety | Resolve / Maxmargin gadget, tree reused across turns | None; tree rebuilt every turn |
 | Tree | Grown by one-sided GT-CFR | PCFR+ search: fixed depth 2. Stockfish search: alpha-beta on each root, to depth 12 at most |
@@ -164,9 +244,10 @@ per physical core in the arena).
 | Move choice | Up to 3 stable moves when safe | Top action only |
 
 What these cost: no bluffs that rely on the opponent fearing positions we know are false;
-roots are not weighted by the opponent's likely play; in the PCFR+ search the opponent is
-modeled as forgetting its past observations and the search sees only one reply deep; in
-the Stockfish search the opponent is modeled as knowing the position.
+roots are weighted by a one-ply judgement of the opponent's moves rather than by a
+strategy the search worked out; in the PCFR+ search the opponent is modeled as forgetting
+its past observations and the search sees only one reply deep; in the Stockfish search the
+opponent is modeled as knowing the position.
 
 ## Data layout
 
@@ -228,7 +309,8 @@ pushes and en passant.
   slower machine that alone would exceed what a move may spend, leave nothing for the
   search and run the clock down. So the bot measures what an update costs per state and
   keeps the cap at what 40% of the move's time pays for (never under 128): a larger set
-  is cut down by uniform subsampling, and the cap goes back up when the clock allows.
+  is cut down (at random, or with weights the likeliest states first), and the cap goes
+  back up when the clock allows.
   With plenty of time on a fast machine nothing changes.
 - **Errors do not end the game.** An exception leaving `observe()` or `act()` exits the
   process, which the referee scores as a loss. The bot catches them and degrades in steps:
@@ -256,10 +338,14 @@ state's count is passed to the engine.)
 
 ## Next
 
-In the order the paper's ablations suggest:
+The paper's own steps, one at a time, in the order its ablations suggest. The Stockfish
+search averages over positions searched separately, which is not what Obscuro does; the
+PCFR+ search is the part with Obscuro's shape, and these build on it:
 
-1. **GT-CFR expansion** instead of the fixed depth-2 tree (needs a general tree in place of
+1. **Stockfish values at the leaves** of the PCFR+ tree in place of the material heuristic
+   (the paper's largest single gain), with the belief's weights as the chance node's odds.
+2. **GT-CFR expansion** instead of the fixed depth-2 tree (needs a general tree in place of
    the flat arrays; `regret.py` carries over unchanged).
-2. **Purification over up to 3 stable moves**, so the bot mixes when it is safe to.
-3. **Tree reuse with the Resolve / Maxmargin gadget**, which also gives real root weights.
-4. **KLUSS roots**: add the histories the opponent cannot tell apart from ours.
+3. **Purification over up to 3 stable moves**, so the bot mixes when it is safe to.
+4. **Tree reuse with the Resolve / Maxmargin gadget**, which gives the paper's root weights.
+5. **KLUSS roots**: add the histories the opponent cannot tell apart from ours.

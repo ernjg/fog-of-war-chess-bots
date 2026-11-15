@@ -2,7 +2,8 @@
 
 On each sampled position Stockfish searches every orthodox-legal move (MultiPV), which
 gives each of our moves a value there. A move that leaves our king capturable on that
-position is an immediate loss instead. The move with the best average is played.
+position is an immediate loss instead. The move with the best average is played. Where
+the belief has weights, the positions are drawn in proportion to them.
 
 Stockfish plays the opponent with full knowledge of each sampled position. The depth-2
 PCFR+ search ends up modelling the opponent the same way (two different belief states
@@ -35,11 +36,15 @@ MAX_SLICE = 1.0            # and at most: with few states left, bank the time in
 RESERVE = 0.06             # seconds kept back for stopping the engines and choosing
 MIN_ENGINE_SECONDS = 0.05
 DRAW = 0.0
-# A belief state in which our king is attacked counts this many times. The belief treats all
-# of the opponent's unseen moves as equally likely, but an opponent who can attack our king
-# out of sight usually does: over 1,053 recorded decisions, when a small share of states had
-# the king attacked it really was attacked about six times as often as that share. (1,965
-# decisions from later games put it near 4.5; the choice of move hardly depends on it.)
+# A belief state in which our king is attacked counts this many times. An opponent who can
+# attack our king out of sight usually does, more often than the belief allows for: over
+# 1,053 recorded decisions without weights, when a small share of states had the king
+# attacked it really was attacked about six times as often as that share. (1,965 decisions
+# from later games put it near 4.5.) With a weighted belief the share is closer to the
+# truth, since the weights favour the moves Stockfish likes, and 2 would match the number
+# of kings lost over 2,675 replayed decisions. The 6 is kept all the same: the choice of
+# move hardly depends on it there, and the weights judge a check from an unseen square as
+# ordinary chess would, a poor move if it can be blocked, when here it is a strong one.
 ATTACKED_WEIGHT = 6.0
 WIN, LOSS = 1.0, -1.0
 
@@ -194,12 +199,38 @@ class Evidence:
     root_values: np.ndarray    # (R, n) value of each move there; LOSS where it loses the king
     sampled: int               # states sent to the engine
     depths: tuple[int, ...]    # search depth completed on each state that had legal moves
+    scan_count: np.ndarray | None = None  # (S,) times each scanned state was drawn; None: once each
+    root_count: np.ndarray | None = None  # (R,) the same for the scored states
+
+
+def draw(states: Sequence[FowBoard], weights: Sequence[float] | None, rng: random.Random
+         ) -> list[tuple[FowBoard, float]]:
+    """The states to look at, each with the number of times it was drawn.
+
+    Without weights (or with equal ones): every state once, in random order. With
+    weights: SCAN_STATES draws in proportion to them, evenly spaced through the total so
+    that a state's count is its fair share to within one; the states drawn most often
+    come first. A state that holds a tenth of the weight is then looked at once and
+    counted for a tenth of the draws, instead of being one voice among hundreds.
+    """
+    if (weights is None or len(weights) != len(states) or not states
+            or max(weights) <= min(weights) * (1 + 1e-12)):
+        return [(state, 1.0) for state in rng.sample(list(states), len(states))]
+    order = rng.sample(range(len(states)), len(states))  # so that ties fall at random
+    share = np.cumsum([max(weights[i], 0.0) for i in order])
+    points = (rng.random() + np.arange(SCAN_STATES)) * share[-1] / SCAN_STATES
+    counts = np.bincount(np.minimum(np.searchsorted(share, points, side="right"), len(order) - 1),
+                         minlength=len(order))
+    drawn = sorted(np.flatnonzero(counts), key=lambda j: -counts[j])  # stable: ties stay random
+    return [(states[order[j]], float(counts[j])) for j in drawn]
 
 
 def gather(pool: EnginePool, states: Sequence[FowBoard], our_moves: Sequence[chess.Move],
-           side: chess.Color, deadline: float, rng: random.Random) -> Evidence | None:
+           side: chess.Color, deadline: float, rng: random.Random,
+           weights: Sequence[float] | None = None) -> Evidence | None:
     """Scan sampled ``states`` for moves that lose the king and have Stockfish score as many
-    as fit before ``deadline``. None when nothing usable came of it."""
+    as fit before ``deadline``. ``weights`` (one per state, optional) decide which states
+    are sampled and how much each counts. None when nothing usable came of it."""
     start = time.monotonic()
     n_moves = len(our_moves)
     if pool.ready_count() == 0 or deadline - start < MIN_ENGINE_SECONDS:
@@ -207,20 +238,23 @@ def gather(pool: EnginePool, states: Sequence[FowBoard], our_moves: Sequence[che
 
     # 1. On a wide sample, find the moves that lose the king at once.
     scanned: list[tuple[FowBoard, MoveClasses]] = []
+    counts: list[float] = []
     scan_until = start + SCAN_SHARE * (deadline - start)
-    for state in rng.sample(list(states), len(states)):
+    for state, count in draw(states, weights, rng):
         now = time.monotonic()
         if len(scanned) >= SCAN_STATES or now > deadline or (scanned and now > scan_until):
             break
         classes = classify(state, our_moves) if state.turn == side else None
         if classes is not None:
             scanned.append((state, classes))
+            counts.append(count)
     if not scanned:
         return None
     scan_suicide = np.zeros((len(scanned), n_moves), dtype=bool)
     for row, (_, classes) in enumerate(scanned):
         scan_suicide[row, list(classes.suicide)] = True
     scan_attacked = np.array([state.is_check() for state, _ in scanned])
+    scan_count = np.array(counts)
 
     # 2. Have Stockfish score the first of those states, as many as the time allows.
     engine_seconds = deadline - time.monotonic()
@@ -282,7 +316,7 @@ def gather(pool: EnginePool, states: Sequence[FowBoard], our_moves: Sequence[che
     if len(use) == 0 or (scan_suicide[kept].all() and not scan_suicide.all()):
         return None
     return Evidence(scan_attacked, scan_suicide, scan_attacked[kept], scan_suicide[kept],
-                    values[use], len(roots), tuple(depths))
+                    values[use], len(roots), tuple(depths), scan_count, scan_count[kept])
 
 
 def _apply_fog_rules(root: _Root, our_moves: Sequence[chess.Move], values: np.ndarray) -> None:
@@ -324,7 +358,8 @@ def weigh(evidence: Evidence,
           attacked_weight: float = ATTACKED_WEIGHT) -> tuple[np.ndarray, np.ndarray]:
     """(value, risk) of each move from the evidence.
 
-    Every state has weight 1, or ``attacked_weight`` if our king is attacked in it.
+    Every state counts as often as it was drawn (once each, unless the belief has
+    weights), times ``attacked_weight`` if our king is attacked in it.
     ``risk`` is the weighted share of scanned states in which the move loses the king.
     The value is ``-risk + (1 - risk) * mean``, where ``mean`` is the move's weighted
     average Stockfish value over the scored states in which the king survives it. With a
@@ -332,8 +367,12 @@ def weigh(evidence: Evidence,
     with -1 where the king is lost.
     """
     scan_weight = np.where(evidence.scan_attacked, attacked_weight, 1.0)
-    risk = scan_weight @ evidence.scan_suicide / scan_weight.sum()
     root_weight = np.where(evidence.root_attacked, attacked_weight, 1.0)
+    if evidence.scan_count is not None:
+        scan_weight = scan_weight * evidence.scan_count
+    if evidence.root_count is not None:
+        root_weight = root_weight * evidence.root_count
+    risk = scan_weight @ evidence.scan_suicide / scan_weight.sum()
     safe = ~evidence.root_suicide
     count = root_weight @ safe
     total = root_weight @ np.where(safe, evidence.root_values, 0.0)
@@ -348,14 +387,18 @@ def weigh(evidence: Evidence,
 
 def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
                      our_moves: Sequence[chess.Move], side: chess.Color, budget: float,
-                     rng: random.Random,
-                     repeat_counts: Sequence[int] | None = None) -> StockfishResult | None:
+                     rng: random.Random, repeat_counts: Sequence[int] | None = None,
+                     weights: Sequence[float] | None = None) -> StockfishResult | None:
     """The move with the best value over sampled ``states``; see ``weigh`` for the value.
+
+    ``weights`` is given when the belief has them (one per state) and None when its
+    states all count alike.
 
     None when it cannot say anything: no engine, no time, no state that fits our view, or
     no state the engine finished. The caller then falls back to the PCFR+ search.
     """
-    evidence = gather(pool, states, our_moves, side, time.monotonic() + budget - RESERVE, rng)
+    evidence = gather(pool, states, our_moves, side, time.monotonic() + budget - RESERVE, rng,
+                      weights)
     if evidence is None:
         return None
     value, risk = weigh(evidence)

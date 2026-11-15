@@ -1,15 +1,17 @@
-"""The belief set: every position consistent with our observations, capped in size."""
+"""The belief set: every position consistent with our observations, capped in size, each
+with a weight for how likely it is."""
 from __future__ import annotations
 
 import random
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 
 import chess
 
 import fow  # noqa: F401  (puts the starter kit on sys.path)
 from referee import FowBoard, fow_moves, observation
 
+from .opponent import OTHER, Policy
 from .rules import side_to_move_wins
 
 StateKey = tuple
@@ -20,6 +22,8 @@ MIN_POOL = 128            # once the set is only a sample, keep at least this ma
 WALK_STEPS = (1, 1, 2, 2, 3, 3, 5, 8)
 REPLENISH_SECONDS = 0.1   # at most, per observation, for topping the sample up
 MAX_MISSES = 64           # failed attempts in a row before concluding it cannot grow
+HEAD_SHARE = 0.75         # of a set that is cut down, the part kept by weight; the rest is drawn at random
+REPLENISH_MASS = 0.25     # of the weight in a weighted set, what the states a top-up adds get between them
 
 
 def state_key(board: chess.Board) -> StateKey:
@@ -61,6 +65,8 @@ class Belief:
         self.max_states = max_states
         self.rng = rng or random.Random()
         self.states: list[FowBoard] = [FowBoard()]
+        self._weights = [1.0]
+        self.weighted = False  # True once an opponent policy has told the states apart
         self.repairs = 0
         self.exact = True  # False once the cap or a repair may have dropped the true position
         self._started = False
@@ -70,54 +76,141 @@ class Belief:
     def __len__(self) -> int:
         return len(self.states)
 
-    def observe(self, obs: str, own_move: chess.Move | None = None) -> None:
-        """Filter with the observation after one ply; ``own_move`` is None unless we played it."""
+    @property
+    def weights(self) -> list[float]:
+        """One weight per state: how likely it is compared with the others. All equal
+        until an opponent policy is used (see observe)."""
+        if len(self._weights) != len(self.states):  # the states were replaced from outside
+            self._weights = [1.0] * len(self.states)
+        return self._weights
+
+    def effective_size(self) -> float:
+        """How many equally likely states the weights amount to: the size of the set when
+        they are all equal, about 1 when one state has nearly all the weight."""
+        weights = self.weights
+        squares = sum(weight * weight for weight in weights)
+        return sum(weights) ** 2 / squares if squares > 0 else 0.0
+
+    def observe(self, obs: str, own_move: chess.Move | None = None,
+                policy: Policy | None = None) -> None:
+        """Filter with the observation after one ply; ``own_move`` is None unless we played it.
+
+        ``policy`` is used on the opponent's plies only and says how likely each of its
+        moves is in a position (see opponent.py). With it a successor weighs what its
+        parent weighed times the probability of the move, summed over the ways to reach
+        it. Without one, every successor of a state weighs what the state did.
+        """
+        parents, started = len(self.states), time.monotonic()
         if own_move is not None:
-            candidates = self._successors(
-                lambda board: (own_move,) if own_move in fow_moves(board) else ())
+            survivors, origins, _ = self._successors_seen(
+                lambda board: (own_move,) if own_move in fow_moves(board) else (), obs)  # moves to try on each board
+            weights = self._inherited(origins)
             to_move = not self.side
-        elif self._started:
-            candidates = self._successors(fow_moves)
+        elif self._started:  # opponent just moved
+            survivors, origins, counts = self._successors_seen(fow_moves, obs)
+            weights = self._after_opponent(origins, counts, policy)
             to_move = self.side
-        else:
-            candidates = iter(self.states)
+        else:  # very first observation
+            kept = self._consistent(obs)
+            survivors, weights = [self.states[i].copy(stack=False) for i in kept], [1.0] * len(kept)
             to_move = chess.WHITE
         self._started = True
-
-        parents, started = len(self.states), time.monotonic()
-        survivors = self._consistent(candidates, obs)
         self.update_cost = (time.monotonic() - started, parents)
+
         if not survivors:
-            survivors = self._repaired(obs, to_move)
-        self._keep(survivors, obs)
+            survivors, weights = self._repaired(obs, to_move)
+        self._keep(survivors, weights, obs)
 
     def repair(self, obs: str, to_move: chess.Color) -> None:
         """Rebuild the set from the current observation alone, when updating it failed."""
         self._started = True
-        self._keep(self._repaired(obs, to_move), obs)
+        self._keep(*self._repaired(obs, to_move), obs)
 
     def limit(self, max_states: int) -> None:
-        """Change the cap. A larger set is cut down to it at once, by the same uniform
-        subsampling as after an update, and is from then on only a sample."""
+        """Change the cap. A larger set is cut down to it at once, in the same way as
+        after an update, and is from then on only a sample."""
         self.max_states = max_states
         if len(self.states) > max_states:
             self.exact = False
-            self.states = self.rng.sample(self.states, max_states)
+            self.states, self._weights = self._cut(self.states, self.weights, max_states)
 
-    def _repaired(self, obs: str, to_move: chess.Color) -> list[FowBoard]:
+    def _inherited(self, origins: list[list[tuple[int, chess.Move]]]) -> list[float]:
+        """Weights after a move of ours: a state weighs what the states it comes from did."""
+        old = self.weights
+        merge = sum if self.weighted else max
+        return [merge(old[parent] for parent, _ in paths) for paths in origins]
+
+    def _after_opponent(self, origins: list[list[tuple[int, chess.Move]]], counts: list[int],
+                        policy: Policy | None) -> list[float]:
+        """Weights after a move of the opponent's. The policy is only asked about the
+        states that have a successor left, the heaviest first, in case it runs out of time."""
+        old = self.weights
+        tables: dict[int, dict[str, float] | None] = {}
+        if policy is not None and origins:
+            asked = sorted({parent for paths in origins for parent, _ in paths},
+                           key=lambda parent: -old[parent])
+            try:
+                answers = policy([self.states[parent] for parent in asked],
+                                 [counts[parent] for parent in asked])
+                tables = dict(zip(asked, answers, strict=True))
+                self.weighted = self.weighted or any(table is not None for table in answers)
+            except Exception:  # a policy that fails is no policy: equal odds
+                tables = {}
+        if not self.weighted:
+            return [max(old[parent] for parent, _ in paths) for paths in origins]
+        # Bayes rule: weight(child) ∝ Σ over parents P(parent) × P(move | parent) × P(obs | child)
+        weights = []
+        for paths in origins:
+            total = 0.0
+            for parent, move in paths:
+                table = tables.get(parent)
+                chance = 1.0 / counts[parent] if table is None else table.get(move.uci(), table[OTHER])
+                total += old[parent] * chance
+            weights.append(total)
+        top = max(weights, default=0.0)
+        return [weight / top for weight in weights] if top > 0 else [1.0] * len(weights)
+
+    def _repaired(self, obs: str, to_move: chess.Color) -> tuple[list[FowBoard], list[float]]:
         self.repairs += 1
         self.exact = False
         self._unchecked = True
-        return self._unique(
-            fit_to_view(project(board, obs, self.side, to_move), obs, self.side, self.rng)
-            for board in self.states)
+        at: dict[StateKey, int] = {}
+        states: list[FowBoard] = []
+        weights: list[float] = []
+        for board, weight in zip(self.states, self.weights, strict=True):
+            fixed = fit_to_view(project(board, obs, self.side, to_move), obs, self.side, self.rng)
+            index = at.setdefault(state_key(fixed), len(states))
+            if index == len(states):
+                states.append(fixed)
+                weights.append(weight)
+            else:
+                weights[index] = weights[index] + weight if self.weighted else max(weights[index], weight)
+        return states, weights
 
-    def _keep(self, survivors: list[FowBoard], obs: str) -> None:
+    def _keep(self, survivors: list[FowBoard], weights: list[float], obs: str) -> None:
         if len(survivors) > self.max_states:
             self.exact = False
-            survivors = self.rng.sample(survivors, self.max_states)
-        self.states = survivors
+            survivors, weights = self._cut(survivors, weights, self.max_states)
+        self.states, self._weights = survivors, weights
         self.replenish(obs)
+
+    def _cut(self, states: list[FowBoard], weights: list[float], size: int
+             ) -> tuple[list[FowBoard], list[float]]:
+        """``size`` of the states. With equal weights, a random sample. Otherwise the
+        heaviest ones for the most part, plus a random draw of the others, each of which
+        then stands for the several that were not drawn (its weight is scaled up), so
+        that the light states keep their share and are not simply forgotten."""
+        if max(weights) <= min(weights) * (1 + 1e-12):
+            keep = self.rng.sample(range(len(states)), size)
+            return [states[i] for i in keep], [weights[i] for i in keep]
+        order = self.rng.sample(range(len(states)), len(states))
+        order.sort(key=lambda i: -weights[i])  # stable: equal weights stay in random order
+        head = int(HEAD_SHARE * size)
+        tail = order[head:]
+        drawn = self.rng.sample(tail, size - head)
+        scale = len(tail) / max(len(drawn), 1)
+        return ([states[i] for i in order[:head] + drawn],
+                [weights[i] for i in order[:head]] + [weights[i] * scale for i in drawn])
 
     def replenish(self, obs: str) -> None:
         """Keep a sampled belief from collapsing onto a few states.
@@ -147,21 +240,29 @@ class Belief:
         def fits(board: FowBoard) -> bool:
             return not side_to_move_wins(board) and observation(board, self.side) == obs
 
+        weights = self.weights
+        pool: list[FowBoard] = []
+        pool_weights: list[float] = []
         if self._unchecked:  # there may be many: in random order, as far as the time goes
-            pool: list[FowBoard] = []
-            for board in self.rng.sample(self.states, len(self.states)):
+            for index in self.rng.sample(range(len(self.states)), len(self.states)):
                 if time.monotonic() >= deadline:
                     break
-                if fits(board):
-                    pool.append(board)
+                if fits(self.states[index]):
+                    pool.append(self.states[index])
+                    pool_weights.append(weights[index])
         else:                # observe() has just filtered them with this very check
-            pool = list(self.states)
+            pool, pool_weights = list(self.states), list(weights)
         self._unchecked = False
         seeds = pool or self.states  # walk from states that fit, if there are any
+        fitting = len(pool)
         seen = {state_key(board) for board in self.states}
         misses = 0
         while len(pool) < target and misses < MAX_MISSES and time.monotonic() < deadline:
-            board = self.rng.choice(pool or seeds).copy(stack=False)
+            if self.weighted and fitting:  # from a likely state rather than from any state
+                seed = self.rng.choices(pool[:fitting], pool_weights[:fitting])[0]
+            else:
+                seed = self.rng.choice(pool or seeds)
+            board = seed.copy(stack=False)
             if self._walk_in_fog(board, hidden) and state_key(board) not in seen and fits(board):
                 seen.add(state_key(board))
                 pool.append(board)
@@ -169,7 +270,12 @@ class Belief:
             else:
                 misses += 1
         if pool:
-            self.states = pool
+            added = len(pool) - fitting
+            # What a top-up adds is guesswork: together the new states get a fixed share
+            # of the weight that was there. (Without weights, all states count the same.)
+            each = (REPLENISH_MASS * sum(pool_weights) / added
+                    if self.weighted and fitting and added else 1.0)
+            self.states, self._weights = pool, pool_weights + [each] * added
 
     def _walk_in_fog(self, board: FowBoard, hidden: int) -> bool:
         """Move opponent pieces that we cannot see to other squares we cannot see, by
@@ -211,27 +317,37 @@ class Belief:
                 board.ep_square = None  # the pawn it referred to may have walked on
         return moved
 
-    def _successors(self, moves_of: Callable[[FowBoard], Iterable[chess.Move]]
-                    ) -> Iterator[FowBoard]:
-        """Each successor is yielded in place (pushed) and popped on resumption."""
-        for board in self.states:
-            for move in moves_of(board):
-                board.push(move)
-                yield board
-                board.pop()
-
-    def _consistent(self, boards: Iterable[FowBoard], obs: str) -> list[FowBoard]:
+    def _successors_seen(self, moves_of: Callable[[FowBoard], Iterable[chess.Move]], obs: str
+                         ) -> tuple[list[FowBoard], list[list[tuple[int, chess.Move]]], list[int]]:
+        """The distinct positions one move on from the states that produce ``obs``; for
+        each, the (state index, move) pairs that lead to it; and the number of moves each
+        state had."""
         view = VisibleSquares(obs)
-        found: dict[StateKey, FowBoard] = {}
-        for board in boards:
-            if (not side_to_move_wins(board) and view.agrees_with(board)
-                    and observation(board, self.side) == obs):
-                found.setdefault(state_key(board), board.copy(stack=False))
-        return list(found.values())
+        at: dict[StateKey, int] = {}
+        survivors: list[FowBoard] = []
+        origins: list[list[tuple[int, chess.Move]]] = []
+        counts: list[int] = []
+        for index, board in enumerate(self.states):
+            moves = moves_of(board)
+            counts.append(len(moves))
+            for move in moves:
+                board.push(move)
+                if (not side_to_move_wins(board) and view.agrees_with(board)
+                        and observation(board, self.side) == obs):
+                    found = at.setdefault(state_key(board), len(survivors))
+                    if found == len(survivors):
+                        survivors.append(board.copy(stack=False))
+                        origins.append([])
+                    origins[found].append((index, move))
+                board.pop()
+        return survivors, origins, counts
 
-    @staticmethod
-    def _unique(boards: Iterable[FowBoard]) -> list[FowBoard]:
-        return list({state_key(board): board for board in boards}.values())
+    def _consistent(self, obs: str) -> list[int]:
+        """Indices of the states that produce ``obs`` as they stand."""
+        view = VisibleSquares(obs)
+        return [index for index, board in enumerate(self.states)
+                if not side_to_move_wins(board) and view.agrees_with(board)
+                and observation(board, self.side) == obs]
 
 
 def project(board: FowBoard, obs: str, side: chess.Color, to_move: chess.Color) -> FowBoard:

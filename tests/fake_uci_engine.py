@@ -9,6 +9,7 @@ Run as ``python fake_uci_engine.py``. ``FAKE_UCI`` is a comma-separated list of:
     die_at=N      exit without a word on the N-th "go" (the handshake's is the first)
     hang_at=N     on the N-th "go", never answer again, not even "stop"
     slow=S        wait S seconds after each depth (so "stop" can arrive mid-search)
+    think=S       wait S seconds before answering each "go", deaf to "stop" meanwhile
     partial       when stopped, report half the moves one depth deeper before "bestmove"
     finish        when stopped, report all the moves one depth deeper before "bestmove"
     bound         when stopped, do the same but give the first line only a bound, as Stockfish
@@ -114,6 +115,8 @@ def main() -> None:
             if int(options.get("hang_at", 0)) == goes:
                 while True:
                     command()
+            if "think" in options:
+                time.sleep(float(options["think"]))
             # Stockfish says a few long things before each search.
             out("info string Available processors: 0-9 " + "." * 120)
             out("info string NNUE evaluation using nn-0123456789ab.nnue " + "." * 120)

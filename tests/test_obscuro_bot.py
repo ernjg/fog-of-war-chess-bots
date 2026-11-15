@@ -158,7 +158,7 @@ def test_the_cost_of_an_update_is_measured_on_the_opponents_moves(monkeypatch) -
     agent.observe(observation(board, chess.WHITE))
     assert agent.state_seconds is None     # one state says nothing about the cost per state
 
-    def fake_observe(obs, own_move=None):
+    def fake_observe(obs, own_move=None, policy=None):
         agent.belief.update_cost = (0.3, 600 if own_move is None else 900)
 
     monkeypatch.setattr(agent.belief, "observe", fake_observe)
@@ -194,6 +194,86 @@ def test_an_en_passant_capture_no_belief_state_allows_is_left_out(capsys) -> Non
     assert capture not in kept and len(kept) == len(moves) - 1
     assert "no belief state allows e5d6" in capsys.readouterr().err
     assert agent._supported([capture]) == [capture]    # the only move is played all the same
+
+
+def test_the_opponent_policy_is_used_on_the_opponents_moves_only(monkeypatch) -> None:
+    agent = make_agent(move_time=0.2)
+    agent.pool = StubPool()
+    seen = []
+
+    def fake_observe(obs, own_move=None, policy=None):
+        seen.append((own_move, policy))
+
+    monkeypatch.setattr(agent.belief, "observe", fake_observe)
+    board = FowBoard()
+    agent.observe(observation(board, chess.WHITE))            # the starting position
+    agent.last_move = chess.Move.from_uci("e2e4")
+    agent.observe(observation(board, chess.WHITE))            # after our move
+    agent.observe(observation(board, chess.WHITE))            # after the opponent's
+    assert [own for own, _ in seen] == [None, chess.Move.from_uci("e2e4"), None]
+    assert seen[1][1] is None and seen[0][1] is seen[2][1] is agent.opponent_policy
+    assert agent.opponent_policy.pool is agent.pool
+    # Its time is a share of the move's, so a quick game does not wait half a second for it.
+    assert agent.opponent_policy.seconds == pytest.approx(bot.POLICY_TIME_SHARE * 0.2)
+
+    agent.pool = StubPool(ready=0)                            # no engine running: no policy
+    agent.observe(observation(board, chess.WHITE))
+    assert seen[-1][1] is None
+    agent.pool = None
+    agent.observe(observation(board, chess.WHITE))
+    assert seen[-1][1] is None
+
+    agent.pool = StubPool()
+    agent.weigh_belief = False                                # switched off (--equal-odds)
+    agent.observe(observation(board, chess.WHITE))
+    assert seen[-1][1] is None
+
+
+def test_the_search_gets_the_weights_once_the_belief_has_them(monkeypatch) -> None:
+    from fow.obscuro.stockfish_search import StockfishResult
+    agent = make_agent(move_time=0.3)
+    agent.pool = StubPool()
+    seen = []
+
+    def fake_stockfish(pool, states, moves, side, budget, rng, repeat_counts=None, weights=None):
+        seen.append(weights)
+        return StockfishResult(chess.Move.from_uci("g1f3"), 0.1, 0.0, 1, 1, 1, (5, 5), False,
+                               tuple(0.0 for _ in moves), tuple(0.0 for _ in moves))
+
+    monkeypatch.setattr(bot, "stockfish_search", fake_stockfish)
+    monkeypatch.setattr(agent.belief, "observe", lambda obs, own_move=None, policy=None: None)
+    agent.observe(observation(FowBoard(), chess.WHITE))
+    agent.act(100.0)
+    assert seen == [None]                    # no policy has spoken: every state counts alike
+    agent.belief.weighted = True
+    agent.belief._weights = [0.25]
+    agent.last_move = None
+    agent.act(100.0)
+    assert seen[-1] == [0.25]
+
+
+def test_the_log_says_how_much_of_the_belief_the_policy_covered() -> None:
+    agent = make_agent()
+    assert agent._policy_note() == ""                  # no policy yet
+    agent.pool = StubPool()
+    policy = agent._policy()
+    policy.asked, policy.answered = 650, 412
+    assert agent._policy_note() == " policy=412/650"
+    assert agent._policy_note() == ""                  # nothing asked since
+    policy.asked, policy.answered = 700, 462
+    assert agent._policy_note() == " policy=50/50"     # counted from the last move on
+    agent.pool = StubPool()                            # new engines, new policy: counts start over
+    agent._policy().asked = 3
+    assert agent._policy_note() == " policy=0/3"
+
+
+def test_the_log_shows_what_the_weights_amount_to() -> None:
+    agent = clock_agent()
+    agent.belief.states = many_states(4)
+    assert agent._belief_size() == "4"
+    agent.belief._weights = [1.0, 1.0, 0.0, 0.0]
+    agent.belief.weighted = True
+    assert agent._belief_size() == "4 ess=2"
 
 
 def test_search_error_still_plays_a_legal_move(monkeypatch) -> None:
@@ -276,7 +356,7 @@ def test_reaching_the_same_squares_by_another_move_counts_as_a_repeat(monkeypatc
         return SearchResult(next(m for m in moves if m.uci() in ("c5d5", "d4d5", "d6d5")), 0.5, 0.0, 1, 1)
 
     monkeypatch.setattr(bot, "search", fake_search)
-    monkeypatch.setattr(agent.belief, "observe", lambda obs, own_move=None: None)
+    monkeypatch.setattr(agent.belief, "observe", lambda obs, own_move=None, policy=None: None)
     for fen in ("7k/8/8/2R5/8/8/8/K7 w - - 0 1", "7k/8/8/8/3R4/8/8/K7 w - - 0 1", "7k/8/3R4/8/8/8/8/K7 w - - 0 1"):
         agent.observe(observation(FowBoard(fen), chess.WHITE))
         agent.last_move = None   # the rook is somewhere else each time: this is not a real game
@@ -313,7 +393,7 @@ def test_stockfish_move_is_played_when_the_engine_answers(monkeypatch) -> None:
     agent.pool = StubPool()
     seen = {}
 
-    def fake_stockfish(pool, states, moves, side, budget, rng, repeat_counts=None):
+    def fake_stockfish(pool, states, moves, side, budget, rng, repeat_counts=None, weights=None):
         seen["budget"] = budget
         return StockfishResult(chess.Move.from_uci("g1f3"), 0.1, 0.0, 1, 1, 1, (5, 5), False,
                                tuple(0.0 for _ in moves), tuple(0.0 for _ in moves))
@@ -379,7 +459,7 @@ def test_late_stockfish_failure_plays_a_fallback_move_and_says_so(monkeypatch, c
     agent = make_agent(move_time=None)
     agent.pool = StubPool()
 
-    def slow_and_empty(pool, states, moves, side, budget, rng, repeat_counts=None):
+    def slow_and_empty(pool, states, moves, side, budget, rng, repeat_counts=None, weights=None):
         time.sleep(budget - 0.05)
         return None
 
@@ -398,7 +478,7 @@ def test_engine_loss_is_logged_with_its_reason(monkeypatch, capsys) -> None:
     agent = make_agent(move_time=0.3)
     pool = agent.pool = StubPool()
 
-    def loses_an_engine(pool, states, moves, side, budget, rng, repeat_counts=None):
+    def loses_an_engine(pool, states, moves, side, budget, rng, repeat_counts=None, weights=None):
         pool.deaths, pool.ready, pool.failure = 1, 1, "exited during a search; last output: boom"
         return StockfishResult(moves[0], 0.0, 0.0, 1, 1, 1, (3, 3), False,
                                tuple(0.0 for _ in moves), tuple(0.0 for _ in moves))

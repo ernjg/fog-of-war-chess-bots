@@ -419,3 +419,223 @@ def test_limit_cuts_the_set_and_marks_it_a_sample() -> None:
     assert len({state_key(state) for state in belief.states}) == 100
     belief.limit(1500)               # the cap goes back up; what was dropped stays dropped
     assert not belief.exact and len(belief) == 100 and belief.max_states == 1500
+
+
+# ---------------------------------------------------------------------------------------
+# Weights.
+
+def test_without_a_policy_every_state_weighs_the_same() -> None:
+    belief = Belief(chess.WHITE, max_states=60, rng=random.Random(1))
+    belief.observe(observation(FowBoard(), chess.WHITE))
+    for board, mover, move in random_game(1, plies=30):
+        belief.observe(observation(board, chess.WHITE), own_move=move if mover == chess.WHITE else None)
+        assert len(belief.weights) == len(belief.states)
+        assert set(belief.weights) == {1.0}
+        assert belief.effective_size() == pytest.approx(len(belief))
+    assert not belief.weighted and not belief.exact
+
+
+def likes(favourite: str, chance: float = 0.9):
+    """A policy that gives ``favourite`` (a UCI move) most of the probability wherever the
+    opponent can play it, and shares the rest among the other moves."""
+    from fow.obscuro.opponent import OTHER
+
+    def policy(boards, counts):
+        tables = []
+        for board, n_moves in zip(boards, counts, strict=True):
+            if chess.Move.from_uci(favourite) in board.generate_pseudo_legal_moves():
+                tables.append({favourite: chance, OTHER: (1 - chance) / (n_moves - 1)})
+            else:
+                tables.append(None)
+        return tables
+
+    return policy
+
+
+def test_a_policy_makes_the_likely_move_weigh_more() -> None:
+    """After 1. a3 we see nothing of Black's reply: all twenty are consistent. With a
+    policy that expects ...e5, that position outweighs each of the others nine to one
+    nineteenth; without one they weigh the same."""
+    board = FowBoard()
+    belief = Belief(chess.WHITE, rng=random.Random(0))
+    belief.observe(observation(board, chess.WHITE))
+    board.push_uci("a2a3")
+    belief.observe(observation(board, chess.WHITE), own_move=chess.Move.from_uci("a2a3"))
+    board.push_uci("g8f6")
+    belief.observe(observation(board, chess.WHITE), policy=likes("e7e5"))
+    assert len(belief) == 20 and belief.weighted
+    by_fen = {state.board_fen(): weight for state, weight in zip(belief.states, belief.weights, strict=True)}
+    after_e5 = FowBoard()
+    after_e5.push_uci("a2a3")
+    after_e5.push_uci("e7e5")
+    assert by_fen[after_e5.board_fen()] == 1.0                      # the heaviest is the unit
+    others = [weight for fen, weight in by_fen.items() if fen != after_e5.board_fen()]
+    assert others == pytest.approx([(0.1 / 19) / 0.9] * 19)
+    assert belief.effective_size() == pytest.approx(1.0, abs=0.3)   # as good as one state
+    assert belief.exact                                             # weights drop nothing
+
+
+def test_weights_follow_the_states_through_our_own_moves_and_add_up_over_transpositions() -> None:
+    board = FowBoard()
+    belief = Belief(chess.WHITE, rng=random.Random(0))
+    belief.observe(observation(board, chess.WHITE))
+    for ours, theirs in (("a2a3", "g8f6"), ("h2h3", "b8c6")):
+        board.push_uci(ours)
+        belief.observe(observation(board, chess.WHITE), own_move=chess.Move.from_uci(ours))
+        board.push_uci(theirs)
+        belief.observe(observation(board, chess.WHITE), policy=likes("g8f6", 0.5))
+    # Both knights out is one position reached two ways: Nf6 then Nc6, or Nc6 then Nf6.
+    # The knight on d5 is reached one way only, Nf6 then Nd5 (most other pairs of moves
+    # can be played in either order, so they are no use as the comparison).
+    weights = {state_key(state): weight for state, weight in zip(belief.states, belief.weights, strict=True)}
+    assert max(weights.values()) == 1.0 and len(weights) == len(belief.states)
+    after_nf6 = FowBoard()
+    for uci in ("a2a3", "g8f6", "h2h3"):
+        after_nf6.push_uci(uci)
+    replies = len(list(fow_moves(after_nf6)))
+    one_way = after_nf6.copy()
+    one_way.push_uci("f6d5")
+    two_ways = board
+    # After the first move Nf6 weighs 1 and each other reply 1/19 of that. From Nf6 the
+    # policy has no favourite (the knight has gone), so every reply has equal odds; from
+    # Nc6 it gives Nf6 a half.
+    by_nf6_first = 1.0 / replies
+    by_nc6_first = (1.0 / 19) * 0.5
+    assert weights[state_key(two_ways)] / weights[state_key(one_way)] == pytest.approx(
+        (by_nf6_first + by_nc6_first) / by_nf6_first)
+
+
+def _odds_by_hash(board, n_moves):
+    """Made-up odds for every move of the side to move: fixed, uneven, summing to 1."""
+    import zlib
+    from fow.obscuro.opponent import OTHER
+    raw = {move.uci(): 1 + zlib.crc32((board.board_fen() + move.uci()).encode()) % 7
+           for move in fow_moves(board)}
+    assert len(raw) == n_moves
+    total = sum(raw.values())
+    return {**{uci: value / total for uci, value in raw.items()}, OTHER: 0.0}
+
+
+@pytest.mark.parametrize("side, line", [
+    (chess.WHITE, ("e2e4", "d7d5", "e4d5", "d8d5", "b1c3", "d5a5", "d2d4", "c7c6")),
+    (chess.BLACK, ("g1f3", "a7a6", "d2d4", "h7h6", "c2c4")),   # we see nothing of White's moves
+])
+def test_the_weights_are_the_exact_probabilities_of_the_positions(side, line) -> None:
+    """Against a count that does not share the belief's bookkeeping: every sequence of
+    opponent moves that fits what we saw, each with the product of its moves' odds, added
+    up by the position it ends in."""
+    def policy(boards, counts):
+        return [_odds_by_hash(board, n) for board, n in zip(boards, counts, strict=True)]
+
+    board = FowBoard()
+    belief = Belief(side, 100_000, rng=random.Random(0))
+    belief.observe(observation(board, side))
+    paths = [(FowBoard(), 1.0)]
+    for uci in line:
+        move = chess.Move.from_uci(uci)
+        ours = board.turn == side
+        board.push(move)
+        seen = observation(board, side)
+        belief.observe(seen, own_move=move if ours else None, policy=None if ours else policy)
+        longer = []
+        for position, chance in paths:
+            replies = [move] if ours else list(fow_moves(position))
+            odds = None if ours else _odds_by_hash(position, len(replies))
+            for reply in replies:
+                if reply not in fow_moves(position):
+                    continue
+                after = position.copy(stack=False)
+                after.push(reply)
+                if not side_to_move_wins(after) and observation(after, side) == seen:
+                    longer.append((after, chance * (1.0 if ours else odds[reply.uci()])))
+        paths = longer
+    assert belief.exact and belief.weighted
+    expected: dict = {}
+    for position, chance in paths:
+        expected[state_key(position)] = expected.get(state_key(position), 0.0) + chance
+    assert len(paths) > len(expected) > 20           # transpositions among them
+    top = max(expected.values())
+    found = {state_key(state): weight for state, weight in zip(belief.states, belief.weights, strict=True)}
+    assert found.keys() == expected.keys()
+    for key, chance in expected.items():
+        assert found[key] == pytest.approx(chance / top, rel=1e-9)
+
+
+def test_a_cut_keeps_the_heaviest_states_and_a_fair_share_of_the_rest() -> None:
+    from fow.obscuro import belief as belief_module
+    belief = Belief(chess.WHITE, rng=random.Random(3))
+    states = [FowBoard() for _ in range(1000)]
+    weights = [1000.0 - index for index in range(1000)]          # heaviest first, all different
+    kept, kept_weights = belief._cut(states, weights, 200)
+    head = int(belief_module.HEAD_SHARE * 200)
+    where = {id(state): index for index, state in enumerate(states)}
+    assert len(kept) == len(kept_weights) == 200
+    assert [where[id(state)] for state in kept[:head]] == list(range(head))  # the heaviest, in order
+    assert kept_weights[:head] == weights[:head]                             # and untouched
+    drawn = [where[id(state)] for state in kept[head:]]
+    assert min(drawn) >= head and len(set(drawn)) == 200 - head
+    scale = (1000 - head) / (200 - head)                          # each drawn state stands for this many
+    assert kept_weights[head:] == pytest.approx([weights[index] * scale for index in drawn])
+    # So the weight of the light states is carried, not dropped: on average over draws it
+    # is what it was. Here, one draw: within a quarter.
+    assert sum(kept_weights[head:]) == pytest.approx(sum(weights[head:]), rel=0.25)
+
+    same, same_weights = belief._cut(states, [1.0] * 1000, 200)   # equal weights: a plain sample
+    assert len(same) == 200 and same_weights == [1.0] * 200
+
+
+def test_limit_and_cap_use_the_weights_once_there_are_any() -> None:
+    belief = sampled_belief(chess.WHITE, [FowBoard() for _ in range(400)])
+    belief._weights = [float(index + 1) for index in range(400)]
+    belief.weighted = True
+    heaviest = belief.states[-50:]
+    belief.limit(100)
+    assert len(belief) == 100 and len(belief.weights) == 100 and belief.max_states == 100
+    assert all(any(state is kept for kept in belief.states) for state in heaviest)
+
+
+def test_weights_are_reset_if_the_states_are_replaced_from_outside() -> None:
+    belief = Belief(chess.WHITE)
+    belief._weights = [0.25]
+    belief.states = [FowBoard(), FowBoard(), FowBoard()]
+    assert belief.weights == [1.0, 1.0, 1.0]
+
+
+def test_a_top_up_gives_the_new_states_a_fixed_share_of_the_weight() -> None:
+    from fow.obscuro import belief as belief_module
+    truth = FowBoard("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+    obs = observation(truth, chess.WHITE)
+    belief = sampled_belief(chess.WHITE, [truth.copy(stack=False)])
+    belief._weights = [4.0]
+    belief.weighted = True
+    belief.replenish(obs)
+    added = len(belief) - 1
+    assert added > 50 and belief.weights[0] == 4.0
+    assert sum(belief.weights[1:]) == pytest.approx(belief_module.REPLENISH_MASS * 4.0)
+    assert len(set(belief.weights[1:])) == 1  # shared equally
+
+
+def test_a_repair_keeps_the_weights() -> None:
+    guess = FowBoard("rnbqk2r/ppppbppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 1")
+    other = FowBoard("rnbqk2r/ppppbppp/7n/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 1")
+    truth = FowBoard("rnbqkbnr/ppp2pp1/3p3p/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 1")
+    belief = sampled_belief(chess.WHITE, [guess, other])
+    belief._weights = [1.0, 0.125]
+    belief.weighted = True
+    truth.push_uci("d8h4")
+    states, weights = belief._repaired(observation(truth, chess.WHITE), chess.WHITE)
+    assert len(states) == len(weights) == 2 and sorted(weights) == [0.125, 1.0]
+
+
+def test_a_policy_that_fails_is_ignored() -> None:
+    def broken(boards, counts):
+        raise RuntimeError("no engine today")
+
+    board = FowBoard()
+    belief = Belief(chess.WHITE, rng=random.Random(0))
+    belief.observe(observation(board, chess.WHITE))
+    board.push_uci("a2a3")
+    belief.observe(observation(board, chess.WHITE), own_move=chess.Move.from_uci("a2a3"))
+    board.push_uci("g8f6")
+    belief.observe(observation(board, chess.WHITE), policy=broken)
+    assert len(belief) == 20 and set(belief.weights) == {1.0} and not belief.weighted

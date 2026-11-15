@@ -26,6 +26,7 @@ import chess  # noqa: E402
 
 from fow.obscuro.belief import Belief  # noqa: E402
 from fow.obscuro.engine import EnginePool  # noqa: E402
+from fow.obscuro.opponent import POLICY_SECONDS, OpponentPolicy  # noqa: E402
 from fow.obscuro.search import move_budget, own_placement, search  # noqa: E402
 from fow.obscuro.stockfish_search import stockfish_search  # noqa: E402
 from fow.protocol import Agent, log, run  # noqa: E402
@@ -36,6 +37,7 @@ BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
 BELIEF_SHARE = 0.4            # of a move's time, at most, for updating the belief
 MIN_BELIEF_STATES = 128       # the belief is not cut below this to save time
+POLICY_TIME_SHARE = 0.15      # of a move's time, at most, for judging the opponent's moves
 DEFAULT_ENGINE = _HERE / "stockfish" / "src" / "stockfish"  # where build.sh leaves it
 ENGINE_START_SECONDS = 8.0    # the arena allows 15 s before "ready"
 ENGINE_RESTART_SECONDS = 3.0  # at most, on our clock, to replace an engine that died
@@ -45,7 +47,7 @@ FALLBACK_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
 
 class ObscuroAgent(Agent):
     def __init__(self, seed: int | None, max_states: int, move_time: float | None,
-                 engine: Path | None = None, engine_count: int = 2):
+                 engine: Path | None = None, engine_count: int = 2, weigh_belief: bool = True):
         self.rng = random.Random(seed)
         self.max_states = max_states
         self.move_time = move_time
@@ -54,6 +56,9 @@ class ObscuroAgent(Agent):
         self.pool: EnginePool | None = None
         self.engine_start_seconds = 0.0  # how long the engines took to start, for restarts
         self.engine_deaths = 0           # engine losses reported in the log so far
+        self.weigh_belief = weigh_belief  # False: every unseen opponent move counts alike
+        self.opponent_policy: OpponentPolicy | None = None
+        self.policy_logged = (0, 0)      # its answered and asked counts at our last move
 
     def reset(self, color: bool, base: float, inc: float) -> None:
         self.side = color
@@ -64,6 +69,7 @@ class ObscuroAgent(Agent):
         self.plies = 0               # observations received = plies played so far + 1
         self.observe_seconds = 0.0   # belief-update time this turn; it runs on our clock
         self.state_seconds: float | None = None  # what updating the belief costs per state
+        self.move_seconds = self.move_time or move_budget(base, inc)  # what a move may take
         self.belief_ok = True
         self.fallbacks = 0
         # Where our pieces have stood: at the start and after each move of ours, with the
@@ -123,13 +129,27 @@ class ObscuroAgent(Agent):
         try:
             if not self.belief_ok:
                 raise RuntimeError("belief was unusable; rebuilding from the observation")
-            self.belief.observe(obs, own_move=own_move)
+            self.belief.observe(obs, own_move=own_move,
+                                policy=None if own_move is not None else self._policy())
             seconds, states = self.belief.update_cost
             if own_move is None and states >= MIN_BELIEF_STATES:  # enough to measure by
                 self.state_seconds = seconds / states
         except Exception:
             self._rebuild_belief(obs, to_move)
         self.observe_seconds += time.monotonic() - started
+
+    def _policy(self) -> OpponentPolicy | None:
+        """How likely each of the opponent's moves is, as Stockfish judges them, for
+        weighting the belief; None without a running engine or when switched off (all
+        moves then count alike)."""
+        pool = self.pool
+        if not self.weigh_belief or pool is None or pool.ready_count() == 0:
+            return None
+        if self.opponent_policy is None or self.opponent_policy.pool is not pool:
+            self.opponent_policy = OpponentPolicy(pool)
+            self.policy_logged = (0, 0)
+        self.opponent_policy.seconds = min(POLICY_SECONDS, POLICY_TIME_SHARE * self.move_seconds)
+        return self.opponent_policy
 
     def _rebuild_belief(self, obs: str, to_move: chess.Color) -> None:
         """The exact update failed: project the old states onto what we see now.
@@ -185,9 +205,12 @@ class ObscuroAgent(Agent):
         cost per state last measured. A larger set is cut down now (it is then a sample);
         the cap goes back up once the clock affords half as many again, or all of them.
         """
-        if self.move_time or self.state_seconds is None or not self.belief_ok:
+        if self.move_time:
             return
-        allowed = BELIEF_SHARE * move_budget(max(left, 0.0), self.increment)
+        self.move_seconds = move_budget(max(left, 0.0), self.increment)
+        if self.state_seconds is None or not self.belief_ok:
+            return
+        allowed = BELIEF_SHARE * self.move_seconds
         affordable = int(allowed / self.state_seconds)
         target = min(self.max_states, max(MIN_BELIEF_STATES, affordable))
         cap = self.belief.max_states
@@ -279,8 +302,9 @@ class ObscuroAgent(Agent):
                 self.close()
                 return None
             budget = deadline - time.monotonic()
+            weights = self.belief.weights if self.belief.weighted else None
             result = stockfish_search(pool, self.belief.states, moves, self.side, budget,
-                                      self.rng, repeat_counts)
+                                      self.rng, repeat_counts, weights)
         except Exception:
             log("obscuro: stockfish search failed")
             traceback.print_exc(file=sys.stderr)
@@ -297,15 +321,29 @@ class ObscuroAgent(Agent):
             f"|P|={self._belief_size()} scan={result.scanned} "
             f"roots={result.roots}/{result.sampled} depth={depth} eng={pool.ready_count()} "
             f"repairs={self.belief.repairs} budget={budget:.2f}s "
-            f"belief_update={spent:.2f}s" + (" repeat_avoided" if result.repeat_avoided else ""))
+            f"belief_update={spent:.2f}s" + self._policy_note()
+            + (" repeat_avoided" if result.repeat_avoided else ""))
         return result.move
 
+    def _policy_note(self) -> str:
+        """For the log: of the positions the opponent policy was asked about since our
+        last move, how many the engines answered in time (the rest got equal odds)."""
+        policy = self.opponent_policy
+        if policy is None:
+            return ""
+        answered, asked = policy.answered - self.policy_logged[0], policy.asked - self.policy_logged[1]
+        self.policy_logged = (policy.answered, policy.asked)
+        return f" policy={answered}/{asked}" if asked > 0 else ""
+
     def _belief_size(self) -> str:
-        """For the log: the number of states, "~" if they are only a sample, and the cap
-        where the clock has lowered it."""
+        """For the log: the number of states, "~" if they are only a sample, the cap where
+        the clock has lowered it, and, once the states have weights, how many equally
+        likely states those weights amount to."""
         size = f"{len(self.belief)}{'' if self.belief.exact else '~'}"
         cap = self.belief.max_states
-        return size if cap >= self.max_states else f"{size}/{cap}"
+        if cap < self.max_states:
+            size = f"{size}/{cap}"
+        return f"{size} ess={self.belief.effective_size():.0f}" if self.belief.weighted else size
 
     def _restart_engines(self, pool: EnginePool, deadline: float) -> None:
         """Replace engines that died, if this move can afford it.
@@ -363,10 +401,14 @@ def main() -> None:
                         help="Stockfish binary (default: $FOW_STOCKFISH, else the one build.sh "
                              "makes); 'off' plays without it")
     parser.add_argument("--engines", type=int, default=2, help="Stockfish processes to run")
+    parser.add_argument("--equal-odds", action="store_true",
+                        help="count every unseen opponent move as equally likely, instead of "
+                             "weighting the belief by Stockfish's judgement of the moves")
     args = parser.parse_args()
     off = args.stockfish.strip().lower() in ("", "off", "none", "0")
     engine = None if off else Path(args.stockfish).expanduser().resolve()
-    agent = ObscuroAgent(args.seed, args.max_states, args.move_time, engine, max(1, args.engines))
+    agent = ObscuroAgent(args.seed, args.max_states, args.move_time, engine, max(1, args.engines),
+                         weigh_belief=not args.equal_odds)
     atexit.register(agent.close)
     run(agent)
 

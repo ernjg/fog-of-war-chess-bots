@@ -24,9 +24,10 @@ import numpy as np  # noqa: E402
 from fow.obscuro.belief import Belief, fit_to_view, project  # noqa: E402
 from fow.obscuro.engine import EnginePool, Job, cp_value  # noqa: E402
 from fow.obscuro.rules import side_to_move_wins  # noqa: E402
-from fow.obscuro.stockfish_search import (ATTACKED_WEIGHT, MAX_DEPTH, WIN, classify,  # noqa: E402
-                                          engine_accepts, engine_fen, king_capturable_after,
-                                          no_safe_reply, stockfish_search)
+from fow.obscuro.stockfish_search import (ATTACKED_WEIGHT, MAX_DEPTH, SCAN_STATES, WIN,  # noqa: E402
+                                          classify, draw, engine_accepts, engine_fen,
+                                          king_capturable_after, no_safe_reply,
+                                          stockfish_search)
 from referee import FowBoard, fow_moves, observation  # noqa: E402
 
 FAKE = [sys.executable, str(Path(__file__).with_name("fake_uci_engine.py"))]
@@ -493,6 +494,33 @@ def test_real_engine_takes_every_position_the_gate_lets_through(stockfish) -> No
 
 
 @real
+def test_real_engine_serves_the_opponent_policy_and_the_search_in_turn(stockfish) -> None:
+    """The policy's many one-ply searches and the move search use the same engines.
+    Neither leaves anything behind for the other, and every table is a set of odds."""
+    from fow.obscuro.opponent import OTHER, OpponentPolicy
+    positions = playout_positions(31, games=8, plies=50)
+    counts = [len(fow_moves(board)) for board in positions]
+    opening = FowBoard()
+    moves = fow_moves(opening)
+    policy = OpponentPolicy(stockfish, seconds=30.0)
+    for _ in range(2):
+        tables = policy(positions, counts)
+        result = stockfish_search(stockfish, [opening], moves, chess.WHITE, 0.5, random.Random(0))
+        assert result is not None and result.roots == 1 and result.depth[0] >= 5
+        assert result.move in moves and abs(result.value) < 0.3   # the opening is about level
+    assert stockfish.deaths == 0 and stockfish.ready_count() == 2
+    assert policy.answered == policy.asked and sum(table is not None for table in tables) == len(positions)
+    for board, table in zip(positions, tables, strict=True):
+        fog_moves = fow_moves(board)
+        orthodox = {move.uci() for move in chess.Board(board.fen(en_passant="fen")).legal_moves}
+        assert set(table) == orthodox | {OTHER}                 # Stockfish lists the legal moves
+        odds = [table.get(move.uci(), table[OTHER]) for move in fog_moves]
+        assert sum(odds) == pytest.approx(1.0) and min(odds) > 0
+        if orthodox and len(orthodox) < len(fog_moves):          # a move that loses the king
+            assert table[OTHER] < min(table[uci] for uci in orthodox) + 1e-12
+
+
+@real
 def test_real_engine_exits_on_what_the_gate_rejects() -> None:
     """Why the gate exists. If this fails, Stockfish changed and the gate needs another look."""
     for fen, accepted in GATE_CASES:
@@ -666,6 +694,20 @@ def test_search_uses_the_default_weight_for_attacked_states(start) -> None:
     assert result.move.uci() in ("e1d2", "e1e2", "e1f2")    # so the king steps out of the line
 
 
+def test_search_counts_attacked_states_six_times_with_weights_too(start) -> None:
+    """The same four states, from a belief with weights: the factor is the same, and it
+    applies on top of what each state weighs."""
+    attacked = FowBoard("4k3/8/8/8/8/8/8/R3K2r w - - 0 1")
+    states = rook_states("h3", "h4", "h5") + [attacked]
+    moves = fow_moves(states[0])
+    quiet = moves.index(chess.Move.from_uci("a1a2"))
+    even = stockfish_search(start(), states, moves, chess.WHITE, 1.0, random.Random(0), None, [1.0] * 4)
+    assert even.risks[quiet] == pytest.approx(6 / 9)
+    light = stockfish_search(start(), states, moves, chess.WHITE, 1.0, random.Random(0), None,
+                             [3.0, 3.0, 3.0, 1.0])
+    assert light.risks[quiet] == pytest.approx(6 / 15, abs=0.01)   # a tenth of the weight, six times
+
+
 def test_weigh_counts_states_with_our_king_attacked_more() -> None:
     from fow.obscuro.stockfish_search import weigh
     # One state in five has our king attacked; there every move but the second loses it.
@@ -679,3 +721,52 @@ def test_weigh_counts_states_with_our_king_attacked_more() -> None:
     assert weighted[0] == pytest.approx(-0.6 + 0.4 * 0.4)
     assert weighted[1] == pytest.approx((6 * -0.5 + 4 * 0.0) / 10)    # that state counts for six
     assert weighted[1] > weighted[0]                                  # now the safe move wins
+
+
+# ---------------------------------------------------------------------------------------
+# States with weights.
+
+def test_draw_without_weights_is_every_state_once() -> None:
+    states = [FowBoard() for _ in range(40)]
+    for weights in (None, [2.0] * 40):
+        drawn = draw(states, weights, random.Random(0))
+        assert sorted(id(state) for state, _ in drawn) == sorted(id(state) for state in states)
+        assert {count for _, count in drawn} == {1.0}
+    assert draw([], None, random.Random(0)) == []
+
+
+def test_draw_with_weights_counts_each_state_for_its_share() -> None:
+    states = [FowBoard() for _ in range(500)]
+    weights = [1.0] * 500
+    weights[7], weights[8] = 500.0, 250.0           # half and a quarter of 1,248 between them
+    drawn = draw(states, weights, random.Random(1))
+    counts = {id(state): count for state, count in drawn}
+    assert sum(counts.values()) == SCAN_STATES
+    assert drawn[0][0] is states[7] and drawn[1][0] is states[8]  # the heaviest come first
+    assert counts[id(states[7])] == pytest.approx(SCAN_STATES * 500 / 1248, abs=1)
+    assert counts[id(states[8])] == pytest.approx(SCAN_STATES * 250 / 1248, abs=1)
+    assert len(drawn) < 120                          # the other 498 share a quarter of the draws
+    assert all(count == 1.0 for _, count in drawn[2:])
+
+    nothing = draw(states[:3], [0.0, 5.0, 0.0], random.Random(2))
+    assert [state for state, _ in nothing] == [states[1]] and nothing[0][1] == SCAN_STATES
+
+
+def test_search_counts_a_heavy_state_for_what_it_weighs(start) -> None:
+    """Ke2 is worth 5000 where it is safe and walks into the rook in one state of four.
+    Unweighted that is a risk of one in four. If that one state has nine tenths of the
+    weight, Ke2 is nearly always a lost king and is not played."""
+    states = rook_states("h2", "h3", "h4", "h5")
+    moves = fow_moves(states[0])
+    index = moves.index(chess.Move.from_uci("e1e2"))
+    pool = start(scores='{"e1e2": 5000}')
+    even = stockfish_search(pool, states, moves, chess.WHITE, 1.0, random.Random(0), None, [1.0] * 4)
+    assert even.risks[index] == pytest.approx(0.25) and even.move == moves[index]
+    heavy = stockfish_search(pool, states, moves, chess.WHITE, 1.0, random.Random(0), None,
+                             [27.0, 1.0, 1.0, 1.0])
+    assert heavy.risks[index] == pytest.approx(0.9, abs=0.01)
+    assert heavy.values[index] == pytest.approx(-0.9 + 0.1 * cp_value(5000), abs=0.02)
+    assert heavy.move != moves[index] and heavy.roots == 4
+    light = stockfish_search(pool, states, moves, chess.WHITE, 1.0, random.Random(0), None,
+                             [1.0, 27.0, 27.0, 27.0])
+    assert light.risks[index] == pytest.approx(1 / 82, abs=0.01) and light.move == moves[index]
