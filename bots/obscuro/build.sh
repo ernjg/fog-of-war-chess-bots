@@ -12,6 +12,14 @@
 # To have an upload without a working Stockfish rejected instead, put an empty file named
 # REQUIRE_STOCKFISH next to this script: the build then fails unless Stockfish works.
 #
+# Before Stockfish it compiles positions.cpp, the helper that keeps the bot's set of
+# possible positions in full (a few seconds). Without it the bot keeps that set in Python,
+# a few hundred positions at a time, and says so. Its line in this log is
+#
+#   build: POSITION SET OK ...          or          build: POSITION SET NOT BUILT ...
+#
+# and an empty file named REQUIRE_POSITIONS makes the build fail unless it was built.
+#
 # For testing: PYTHON sets the interpreter for the start-up check and CPUINFO the file read
 # in place of /proc/cpuinfo.
 
@@ -19,6 +27,7 @@ STATUS=0
 trap 'exit "$STATUS"' EXIT   # nothing that goes wrong in here may reject the upload by accident
 cd "$(dirname "$0")" || exit
 [ -e REQUIRE_STOCKFISH ] && STATUS=1   # ... unless that was asked for
+[ -e REQUIRE_POSITIONS ] && STATUS=1
 
 SRC=stockfish/src
 BIN=$SRC/stockfish
@@ -28,7 +37,10 @@ JOBS=3             # compilers at once: two cores with four threads, and 4 GiB o
 PY=${PYTHON:-python3}
 CPUINFO=${CPUINFO:-/proc/cpuinfo}
 NEED=1             # engines the start-up check must bring up: both, if Stockfish is required
-[ "$STATUS" -eq 0 ] || NEED=2
+[ -e REQUIRE_STOCKFISH ] && NEED=2
+POSITIONS=positions    # the position-set helper, where bot.py looks for it
+POSITIONS_UNTIL=60     # seconds from the start: its compiler does not run past this
+POSITIONS_OK=0
 TMP="$PWD/.build-tmp"
 LIMITER=none       # what cuts a step off when its time is up: "timeout", where that command exists
 WHY=""             # why Stockfish was not built
@@ -40,8 +52,15 @@ finish() {  # $1 = the last line of the log, $2 = "ok" if Stockfish works
     rm -rf "$TMP"
     find "$SRC" -name '*.o' -delete 2>/dev/null
     rm -f "$SRC/.depend"
-    [ "${2:-}" = ok ] && STATUS=0
-    [ "$STATUS" -eq 0 ] || say "REQUIRE_STOCKFISH is present, so this build fails and the upload is rejected"
+    STATUS=0
+    if [ -e REQUIRE_STOCKFISH ] && [ "${2:-}" != ok ]; then
+        STATUS=1
+        say "REQUIRE_STOCKFISH is present, so this build fails and the upload is rejected"
+    fi
+    if [ -e REQUIRE_POSITIONS ] && [ "$POSITIONS_OK" -ne 1 ]; then
+        STATUS=1
+        say "REQUIRE_POSITIONS is present, so this build fails and the upload is rejected"
+    fi
     say "$1"
     exit "$STATUS"
 }
@@ -160,9 +179,38 @@ compile() {  # $1 = Stockfish ARCH
     fi
 }
 
+# The position-set helper is one file with nothing to configure. It is kept only if it
+# passes its own check, which counts moves under the Fog of War rules: a helper that got
+# those wrong would be worse than none.
+build_positions() {
+    local cxx="" started=$SECONDS answer=""
+    [ -f positions.cpp ] || { say "POSITION SET NOT BUILT: no positions.cpp here"; return 1; }
+    for cxx in g++ c++ clang++ ""; do
+        [ -n "$cxx" ] && command -v "$cxx" >/dev/null 2>&1 && break
+    done
+    [ -n "$cxx" ] || { say "POSITION SET NOT BUILT: no C++ compiler"; return 1; }
+    if ! run_for $((POSITIONS_UNTIL - SECONDS)) "$cxx" -O2 -std=c++17 -o "$POSITIONS" positions.cpp > "$TMP/positions.log" 2>&1 \
+            || [ ! -x "$POSITIONS" ]; then
+        say "POSITION SET NOT BUILT: $cxx did not compile it: $(because "$TMP/positions.log")"
+        rm -f "$POSITIONS"
+        return 1
+    fi
+    answer=$(run_for 20 "./$POSITIONS" selftest 2>&1 | tail -n 1 | cut -c1-200)
+    case "$answer" in
+        "selftest ok"*)
+            POSITIONS_OK=1
+            say "POSITION SET OK: $cxx, $((SECONDS - started))s; $answer"
+            return 0 ;;
+    esac
+    say "POSITION SET NOT BUILT: its self-test did not pass: ${answer:-it printed nothing}"
+    rm -f "$POSITIONS"
+    return 1
+}
+
 mkdir -p "$TMP"
 export TMPDIR="$TMP"   # compilers write temporaries here; the arena's /tmp is small
 clean                  # never keep a binary or objects that came in with the upload
+rm -f "$POSITIONS"
 
 cat > "$TMP/check.py" <<'PY'
 # Start the binary the way the bot does and have it score the starting position.
@@ -197,11 +245,12 @@ PY
 timeout -k 5 5 true >/dev/null 2>&1 && LIMITER=timeout
 
 # What the sandbox offers, for whoever reads the build log.
-if [ "$STATUS" -eq 0 ]; then
-    say "REQUIRE_STOCKFISH is absent: this build passes with or without Stockfish"
-else
+if [ -e REQUIRE_STOCKFISH ]; then
     say "REQUIRE_STOCKFISH is present: this build fails unless Stockfish works (both engines)"
+else
+    say "REQUIRE_STOCKFISH is absent: this build passes with or without Stockfish"
 fi
+[ -e REQUIRE_POSITIONS ] && say "REQUIRE_POSITIONS is present: this build fails unless the position-set helper is built"
 say "$(uname -srm), $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo '?') processors, bash ${BASH_VERSION:-?}"
 say "tools: g++=$(command -v g++ || echo none) $PY=$(command -v "$PY" || echo none); steps are cut off by: $LIMITER"
 say "compiler: $( (g++ --version 2>/dev/null || c++ --version 2>/dev/null) | head -n 1)"
@@ -226,6 +275,8 @@ else
 fi
 say "memory: $(grep -m1 MemTotal /proc/meminfo 2>/dev/null | tr -s ' '); space here: $(df -Pk . 2>/dev/null | awk 'NR==2 {print int($4/1024) " MB free"}')"
 say "stockfish already installed: $(command -v stockfish || echo no)"
+
+build_positions   # first, so that nothing that goes wrong with Stockfish can keep it from being built
 
 [ -f "$SRC/Makefile" ] || finish "STOCKFISH NOT BUILT: no source in $SRC (docs/obscuro.md says how to fetch it)"
 NET=$(grep -o 'nn-[0-9a-f]\{12\}\.nnue' "$SRC/evaluate.h" 2>/dev/null | head -n 1)

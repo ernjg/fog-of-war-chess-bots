@@ -30,6 +30,9 @@ ENGINE_MODULE = ROOT / "fow" / "obscuro" / "engine.py"
 NET = "nn-0123456789ab.nnue"
 NOT_BUILT = "build: STOCKFISH NOT BUILT: "
 BUILT = "build: STOCKFISH OK: "
+POSITIONS_SOURCE = ROOT / "bots" / "obscuro" / "positions.cpp"
+SET_BUILT = "build: POSITION SET OK: "
+SET_NOT_BUILT = "build: POSITION SET NOT BUILT: "
 
 # Enough of a UCI engine for the bot's start-up check: the handshake, and all twenty moves
 # of the starting position scored.
@@ -212,6 +215,11 @@ for arg in "$@"; do
     [ "$arg" = "-mavx2" ] && kind=avx2
     previous="$arg"
 done
+if [ "$out" = positions ]; then   # the position-set helper: a program that passes or fails its self-test
+    printf '#!/bin/sh\necho "selftest %s: stand-in"\n' "${STUB_SELFTEST:-ok}" > "$out"
+    chmod +x "$out"
+    exit 0
+fi
 if [ "$compiling" = 1 ]; then echo "$kind" > "$out"; exit 0; fi
 if [ -n "$STUB_AVX2_DIES" ] && grep -q avx2 ./*.o; then
     printf '#!/bin/sh\nexit 132\n' > "$out"
@@ -319,3 +327,101 @@ def test_required_stockfish_means_both_engines_and_a_failed_check_is_repeated(tm
     status, lines = build(root, **{**env, "FAKE_UCI": f"mute_one={root / 'silent'}"})
     assert status == 0 and any("REQUIRE_STOCKFISH is absent" in line for line in lines[:3])
     assert lines[-1].startswith(BUILT) and "1 of 2 engines ready in 8.0" in lines[-1]
+
+
+# ---------------------------------------------------------------------------------------
+# The position-set helper, which is built before Stockfish.
+
+def with_helper(root: Path, source: str | None = None, *, marker: bool = False) -> Path:
+    """Put the helper's source (or a stand-in for it) into a tree made by tree()."""
+    (root / "positions.cpp").write_text(POSITIONS_SOURCE.read_text() if source is None else source)
+    if marker:
+        (root / "REQUIRE_POSITIONS").touch()
+    return root
+
+
+def test_the_helper_is_built_checked_and_kept_whatever_becomes_of_stockfish(tmp_path: Path) -> None:
+    needs_compiler()
+    root = with_helper(tree(tmp_path))            # no Stockfish source at all
+    status, lines = build(root)
+    assert status == 0, lines
+    (line,) = [line for line in lines if "POSITION SET" in line]
+    assert line.startswith(SET_BUILT) and "selftest ok: 0 of 5 checks failed" in line
+    assert lines[-1].startswith(NOT_BUILT + "no source in stockfish/src")
+    helper = root / "positions"
+    assert helper.is_file() and os.access(helper, os.X_OK) and leftovers(root) == []
+    out = subprocess.run([str(helper), "selftest"], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0 and out.stdout.startswith("selftest ok")
+
+
+def test_without_its_source_the_helper_is_reported_missing_and_the_upload_is_accepted(tmp_path: Path) -> None:
+    status, lines = build(tree(tmp_path))
+    assert status == 0
+    assert SET_NOT_BUILT + "no positions.cpp here" in lines and not (tmp_path / "positions").exists()
+
+
+def test_the_helpers_marker_rejects_an_upload_without_it(tmp_path: Path) -> None:
+    root = tree(tmp_path / "missing")
+    (root / "REQUIRE_POSITIONS").touch()
+    status, lines = build(root)
+    assert status == 1 and any("REQUIRE_POSITIONS is present: this build fails unless" in line for line in lines[:3])
+    assert lines[-2] == "build: REQUIRE_POSITIONS is present, so this build fails and the upload is rejected"
+    assert lines[-1].startswith(NOT_BUILT)
+
+    needs_compiler()
+    root = with_helper(tree(tmp_path / "built"), marker=True)   # the helper is there; Stockfish is not asked for
+    status, lines = build(root)
+    assert status == 0, lines
+    assert not any("so this build fails" in line for line in lines) and (root / "positions").is_file()
+
+    root = with_helper(tree(tmp_path / "both", marker=True), marker=True)  # both asked for, Stockfish missing
+    status, lines = build(root)
+    assert status == 1 and "REQUIRE_STOCKFISH" in lines[-2] and not any("REQUIRE_POSITIONS is present, so" in line for line in lines)
+
+
+def test_a_helper_that_does_not_compile_or_came_with_the_upload_is_not_kept(tmp_path: Path) -> None:
+    needs_compiler()
+    root = with_helper(tree(tmp_path / "broken"), BROKEN_SOURCE)
+    stale = root / "positions"
+    stale.write_text("#!/bin/sh\necho selftest ok: built somewhere else\n")
+    stale.chmod(0o755)
+    status, lines = build(root)
+    assert status == 0
+    (line,) = [line for line in lines if "POSITION SET" in line]
+    assert line.startswith(SET_NOT_BUILT) and "did not compile it" in line
+    assert not stale.exists() and leftovers(root) == []
+
+    root = with_helper(tree(tmp_path / "wrong"), "#include <cstdio>\nint main() { puts(\"selftest FAILED: 1 of 5 checks failed\"); return 1; }\n")
+    status, lines = build(root)
+    (line,) = [line for line in lines if "POSITION SET" in line]
+    assert status == 0 and line.startswith(SET_NOT_BUILT + "its self-test did not pass: selftest FAILED")
+    assert not (root / "positions").exists()
+
+    root = tree(tmp_path / "no source")           # a binary and no source: it goes all the same
+    stale = root / "positions"
+    stale.write_text("#!/bin/sh\necho selftest ok\n")
+    stale.chmod(0o755)
+    status, lines = build(root)
+    assert status == 0 and not stale.exists()
+
+
+def test_linux_build_compiles_the_helper_first_and_then_stockfish(tmp_path: Path) -> None:
+    root = tmp_path / "both"
+    env = linux_tree(root, AVX2_CPU, marker=True)
+    with_helper(root, "// stand-in\n", marker=True)
+    status, lines = build(root, **env)
+    assert status == 0, lines
+    assert any(line.startswith(SET_BUILT + "g++, ") and "selftest ok: stand-in" in line for line in lines)
+    assert lines[-1].startswith(BUILT + "ARCH=x86-64-avx2, ")
+    first = commands(root)[0]
+    assert first == "g++ -O2 -std=c++17 -o positions positions.cpp"   # before any Stockfish file
+    assert len([line for line in commands(root) if " -c " in line]) == 5
+    assert (root / "positions").is_file() and leftovers(root) == []
+
+    root = tmp_path / "self-test fails"
+    env = linux_tree(root, AVX2_CPU)
+    with_helper(root, "// stand-in\n", marker=True)
+    status, lines = build(root, **{**env, "STUB_SELFTEST": "FAILED"})
+    assert status == 1 and not (root / "positions").exists()
+    assert any(line.startswith(SET_NOT_BUILT + "its self-test did not pass: selftest FAILED") for line in lines)
+    assert lines[-1].startswith(BUILT) and "REQUIRE_POSITIONS is present, so" in lines[-2]   # Stockfish is built all the same

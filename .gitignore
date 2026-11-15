@@ -11,3 +11,4 @@ dist/
 bots/*/stockfish/
 bots/*/stockfish.new/
 bots/*/.build-tmp/
+bots/*/positions
