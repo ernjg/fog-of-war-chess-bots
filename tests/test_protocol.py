@@ -70,6 +70,13 @@ CASES = {
     "obscuro, no helper built": ("obscuro", [*OBSCURO, "0.05", "--stockfish", "off",
                                              "--positions", "no/such/binary"], None,
                                  ["no position-set helper at"]),
+    # These are the uploaded versions kept as their own bots (see docs/versions.md). v3 and
+    # v4 play through their own engine code, driven by the scripted engine.
+    "obscuro_v2": ("obscuro_v2", [*OBSCURO, "0.05"], None, []),
+    "obscuro_v3 with an engine": ("obscuro_v3", [*OBSCURO, "0.3"], "",
+                                  ["stockfish ready: 2 of 2 engines", "obscuro: sf "]),
+    "obscuro_v4 with an engine": ("obscuro_v4", [*OBSCURO, "0.3", "--positions", "off"], "",
+                                  ["stockfish ready: 2 of 2 engines", "obscuro: sf "]),
 }
 # A stand-in for the helper that answers its first command and nothing after it.
 STUCK_HELPER = """#!/bin/bash
