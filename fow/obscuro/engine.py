@@ -45,11 +45,15 @@ def mate_value(moves: int) -> float:
 
 
 def parse_info(line: str) -> tuple[int, int, str, float] | None:
-    """(depth, MultiPV rank, first move, value for the side to move) of a search line such as
-    ``info depth 6 seldepth 9 multipv 3 score cp -12 nodes ... pv e2e4 e7e5``.
+    """(depth, rank, move, value) from one Stockfish line. With MultiPV, Stockfish prints
+    one line per legal move, ranked 1 = best; ``value`` is the move's score for the side to
+    move, on the -1..1 scale of ``cp_value`` / ``mate_value``. For example:
 
-    None for everything else, including the placeholders Stockfish prints for moves it
-    never searched ("seldepth 0", or nothing after "pv") and scores that are only bounds.
+        info depth 12 seldepth 18 multipv 2 score cp 30 ... pv d2d4 d7d5
+            -> (12, 2, "d2d4", 0.049)
+
+    None for lines whose score is not exact: non-search or malformed lines, unsearched
+    placeholders (``seldepth 0`` or an empty ``pv``) and ``lowerbound``/``upperbound``.
     """
     parts = line.split()
     if len(parts) < 10 or parts[0] != "info" or parts[1] != "depth":
@@ -75,8 +79,8 @@ def parse_info(line: str) -> tuple[int, int, str, float] | None:
 
 @dataclass(frozen=True)
 class Job:
-    fen: str
-    depth: int
+    fen: str  # board
+    depth: int  # depth to search to
 
 
 @dataclass
@@ -122,7 +126,7 @@ class Engine:
         os.set_blocking(self.fd, False)
 
     def send(self, text: str) -> bool:
-        """Write commands (short, so the pipe never fills); False if the engine is gone."""
+        """Write commands (short, so the pipe never fills) to stockfish; False if the engine is gone."""
         if self.dead:
             return False
         data = text.encode("ascii")
@@ -229,7 +233,7 @@ class _Running:
 class EnginePool:
     def __init__(self, command: Sequence[str], cwd: str | None = None):
         self.command = list(command)
-        self.cwd = cwd  # Stockfish looks for its network file here and beside its binary
+        self.cwd = cwd  # Stockfish looks for its network file here and beside its binary, short for current working directory
         self.engines: list[Engine] = []
         self.wanted = 0
         self.restarts = 0
@@ -276,7 +280,7 @@ class EnginePool:
                    f"setoption name MultiPV value {MULTIPV}\nisready\n")
         steps = (("uci\n", "uciok"), (options, "readyok"),
                  ("position startpos\ngo depth 1\n", "bestmove"))
-        step: dict[Engine, int] = {}  # the step each engine has still to answer
+        step: dict[Engine, int] = {}  # the step each engine has still to answer, eg {engine_A: 0, engine_B: 0}
         began = time.monotonic()
         for _ in range(count):
             try:
@@ -297,11 +301,11 @@ class EnginePool:
                 reply = steps[step[engine]][1]
                 if any(line.startswith(reply) for line in engine.read_lines()):
                     step[engine] += 1
-                    if step[engine] == len(steps):
+                    if step[engine] == len(steps):  # all steps completed
                         del step[engine]
                         ready.append(engine)
                         self.start_seconds = time.monotonic() - began
-                    elif not engine.send(steps[step[engine]][0]):
+                    elif not engine.send(steps[step[engine]][0]):  # sending fails
                         del step[engine]
                         self._lost(engine, f"exited after {reply}")
                 elif engine.dead:
@@ -326,30 +330,33 @@ class EnginePool:
         running: dict[Engine, _Running] = {}
         while True:
             now = time.monotonic()
+            # hand out work
             for engine in self.engines:
                 if not queue or now >= deadline:
                     break
                 if engine.dead or engine in running:
                     continue
-                share = (deadline - now) * max(1, self.ready_count()) / len(queue)
+                share = (deadline - now) * max(1, self.ready_count()) / len(queue)  # time left * # engines / # waiting jobs
                 index = queue.popleft()
                 job = jobs[index]
                 if engine.send(f"position fen {job.fen}\ngo depth {job.depth}\n"):
-                    stop_at = min(deadline, now + min(max_slice, max(min_slice, share)))
+                    slice_seconds = min(max(share, min_slice), max_slice)  # keep share between min_slice and max_slice
+                    stop_at = min(now + slice_seconds, deadline)
                     running[engine] = _Running(index, stop_at)
                 else:
                     self._lost(engine, "exited before a search")
                     queue.appendleft(index)  # another engine can still take it
+            # if queue is empty and no engines are running, we are done
             if not running:
                 return results
-
+            # wait and read
             wake = min(state.kill_at if state.stop_sent else state.stop_at
                        for state in running.values())
             ready = self._select(list(running), max(0.0, wake - time.monotonic()))
             for engine in ready:
-                state = running[engine]
+                state = running[engine]  # current job, which job it is, time limit, and move scores read so far
                 for line in engine.read_lines():
-                    if line.startswith("bestmove"):
+                    if line.startswith("bestmove"):  # bestmove line means search is done
                         results[state.index] = state.result(line)
                         del running[engine]
                         break
@@ -358,7 +365,7 @@ class EnginePool:
                     if engine.dead:
                         self._lost(engine, "exited during a search")
                         del running[engine]
-
+            # enforce time limits, stopping engines that have exceeded their allotted time
             now = time.monotonic()
             for engine, state in list(running.items()):
                 if not state.stop_sent and now >= state.stop_at:

@@ -15,8 +15,8 @@ BUILD_SHARE = 0.8  # the depth-2 solve converges (gap ~0) in a few hundred itera
 MAX_ROOTS = 200
 MIN_ITERATIONS = 20
 AHEAD_VALUE = 0.1      # above this we are winning (about half a pawn) and a draw is a bad result
-REPEAT_PENALTY = 0.05  # value given up per earlier time our pieces stood where a move puts them
-DRAW_SHARE = 0.5       # of our lead, at least, given up by a move that may make it the third time
+REPEAT_PENALTY = 0.05  # penalty per earlier visit to the piece layout a move leads to (DRAW_SHARE takes over at 2+)
+DRAW_SHARE = 0.5       # penalty for a move that may repeat a position a third time, as a share of our lead
 
 
 def move_budget(remaining: float, increment: float) -> float:
