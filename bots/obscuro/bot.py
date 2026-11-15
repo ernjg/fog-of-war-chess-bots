@@ -88,13 +88,21 @@ class ObscuroAgent(Agent):
 
     def close(self) -> None:
         """Stop the engines and the helper. Safe to call at any time, more than once."""
+        self._stop_engines()
+        self._stop(getattr(self.belief, "close", None))
+
+    def _stop_engines(self) -> None:
+        """Stop the engines only. The position set is still wanted without them."""
         pool, self.pool = self.pool, None
-        for stop in (getattr(pool, "close", None), getattr(self.belief, "close", None)):
-            if stop is not None:
-                try:
-                    stop()
-                except Exception:
-                    traceback.print_exc(file=sys.stderr)
+        self._stop(getattr(pool, "close", None))
+
+    @staticmethod
+    def _stop(stop) -> None:
+        if stop is not None:
+            try:
+                stop()
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
 
     def _new_belief(self, color: bool) -> Belief | PositionSet:
         """The set of possible positions: kept in full by the compiled helper if there is
@@ -343,7 +351,7 @@ class ObscuroAgent(Agent):
             if pool.ready_count() == 0 and pool.restarts >= pool.restart_limit:
                 log(f"obscuro: stockfish is gone for this game ({pool.failure}); "
                     "using the PCFR+ search")
-                self.close()
+                self._stop_engines()  # not close(): the position-set helper stays
                 return None
             budget = deadline - time.monotonic()
             weights = self.belief.weights if self.belief.weighted else None

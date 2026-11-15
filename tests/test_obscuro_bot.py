@@ -624,6 +624,22 @@ def test_a_helper_lost_in_mid_game_is_reported_once_and_the_game_goes_on(helper,
         agent.close()
 
 
+def test_giving_up_on_stockfish_leaves_the_helper_running(helper, monkeypatch, capsys) -> None:
+    from fow.obscuro.position_set import PositionSet
+    agent = helped_agent(helper, move_time=0.5)
+    try:
+        pool = agent.pool = StubPool(ready=0, restarts=3)
+        monkeypatch.setattr(bot, "stockfish_search", boom)  # must not be called without engines
+        play(agent, 8)
+        assert agent.pool is None and pool.closed
+        # Only the engines are gone. The set is still the helper's, and still complete.
+        assert isinstance(agent.belief, PositionSet) and agent.belief.fallback is None
+        assert agent.belief.helper.proc.poll() is None and agent.belief.exact
+        assert "position-set helper lost" not in capsys.readouterr().err
+    finally:
+        agent.close()
+
+
 def test_the_helper_is_told_how_long_an_update_may_take(helper) -> None:
     agent = helped_agent(helper, move_time=None)
     try:

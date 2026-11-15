@@ -108,9 +108,12 @@ So each state has a weight (`belief.py`, `opponent.py`):
   test compares the result with a count over every sequence of unseen moves. A state in
   which the opponent could have taken our king, and did not, keeps 2% of its weight.
 - **What it models.** Good play, not any particular opponent, and it judges the moves as
-  if the opponent saw the whole board. Obscuro gets its weights from the opponent strategy
-  that its previous search computed, mixed half and half with equal odds; this is the
-  same idea without the search tree.
+  if the opponent saw the whole board. This is our addition. Obscuro has no model of the
+  opponent and draws the positions it adds from P at random, all alike. Where it does
+  weight the opponent's possible positions, in its Resolve step, the weights come from
+  the opponent strategy its previous search computed, mixed half and half with equal
+  odds (appendix C.3). Weighting P by a model of the opponent's play is something the
+  paper leaves as future work.
 - **Where it is used.** The search draws its states by weight (above). When the set has to
   be cut to the cap, the heaviest three quarters of the cap are kept and the rest is drawn
   at random from the other states, each drawn state's weight scaled up to stand for the
@@ -118,8 +121,9 @@ So each state has a weight (`belief.py`, `opponent.py`):
   (`replenish`) are grown from likely states and get a quarter of the weight between them.
 - **What it costs.** A third of a millisecond per state on the development machine, and
   per move at most 0.5 s and 15% of the move's time; states the engines did not get to (the
-  lightest) use equal odds. It is timed as part of the belief update, so the cap that
-  follows the clock makes room for it.
+  lightest) use equal odds. With the belief kept in Python it is timed as part of the
+  belief update, so the cap that follows the clock makes room for it; with the compiled
+  helper only the helper's own work is timed, and those two limits are what bound it.
 
 Measured by replaying our side of 100 public arena games (2,675 decisions) against the
 true boards, with a Python belief capped at 800 states, without weights and with them.
@@ -302,8 +306,8 @@ per physical core in the arena).
 | | Paper | This bot |
 | --- | --- | --- |
 | Belief | Exact P, up to 10^6 states | Exact up to 200,000 states (compiled helper; fewer when the clock is short), then the likeliest states first; once sampled, topped up towards 128 states where the fog allows. Without the helper, capped at 1,500 |
-| Root weights | From the opponent strategy of the previous search, mixed half and half with equal odds | From Stockfish's one-ply scores of the opponent's moves, mixed 80/20 with equal odds (PCFR+ search: none) |
-| Roots | KLUSS: our infoset plus histories the opponent confuses with it | Drawn from P each turn, by weight. Stockfish search: states with our king attacked count six times |
+| Root weights | Positions added from P are drawn at random, all alike. Resolve's root distribution comes from the opponent strategy of the previous search, mixed half and half with equal odds | From Stockfish's one-ply scores of the opponent's moves, mixed 80/20 with equal odds (PCFR+ search: none) |
+| Roots | KLUSS: our infoset plus histories the opponent confuses with it | Drawn from P each turn. Stockfish search: by weight, and states with our king attacked count six times. PCFR+ search: all alike |
 | Opponent infosets | Full observation history | PCFR+ search: current observation and legal replies. Stockfish search: the opponent knows the position |
 | Subgame safety | Resolve / Maxmargin gadget, tree reused across turns | None; tree rebuilt every turn |
 | Tree | Grown by one-sided GT-CFR | PCFR+ search: fixed depth 2. Stockfish search: alpha-beta on each root, to depth 12 at most |
@@ -410,9 +414,153 @@ search averages over positions searched separately, which is not what Obscuro do
 PCFR+ search is the part with Obscuro's shape, and these build on it:
 
 1. **Stockfish values at the leaves** of the PCFR+ tree in place of the material heuristic
-   (the paper's largest single gain), with the belief's weights as the chance node's odds.
+   (the largest effect among the paper's ablations: the full program scored 81.9%
+   against a version with a hand-made evaluation). The roots stay equally likely for
+   now: weighting them by a model of the opponent is ours (see
+   [Beyond the paper](#beyond-the-paper)), and the paper's own root weights come with
+   step 4.
 2. **GT-CFR expansion** instead of the fixed depth-2 tree (needs a general tree in place of
    the flat arrays; `regret.py` carries over unchanged).
 3. **Purification over up to 3 stable moves**, so the bot mixes when it is safe to.
 4. **Tree reuse with the Resolve / Maxmargin gadget**, which gives the paper's root weights.
 5. **KLUSS roots**: add the histories the opponent cannot tell apart from ours.
+
+Changes of our own come after these. They are collected under
+[Beyond the paper](#beyond-the-paper).
+
+## Beyond the paper
+
+The plan is to build the paper's algorithm as it stands (the steps under [Next](#next))
+and only then add changes of our own. This is the list of those changes, kept so that
+none is lost and none slips in early. An entry says what the change is, what we know
+about it and where it stands. Choices that the paper leaves open and every version has to
+make (the time per move, a set too large to enumerate on our clock, two cores instead of
+six) are not listed here; they are in
+[Differences from the paper](#differences-from-the-paper) and
+[Design choices](#design-choices).
+
+"Replay" means our side of 100 public arena games (2,675 decisions) replayed against the
+true boards with the full weighted set, as in [The position set](#the-position-set): the
+average value lost by the chosen move, and how many chosen moves lose the king. As it
+stands the bot loses 0.0376 and 46 kings there. Where an entry compares other beliefs it
+says so. These are estimates made without playing; only games settle whether a change
+helps.
+
+### In the bot now
+
+None of these is in the paper. It has no model of the opponent ("Obscuro does not know or
+attempt to model the opponent"), no rule about king safety or checks, no veto on risky
+moves (its one safety test only decides whether it may mix between moves), and no rule
+about repetition. When the paper's search goes in, each of them is dropped unless it is
+brought back from this list on purpose.
+
+- **Weighted belief** (`opponent.py`; see [Weighted belief](#weighted-belief)). Replay:
+  value lost 0.048 without weights and 0.041 with them (both on a Python belief capped
+  at 800 states), 0.038 with the full set. Against teams rated under 1600 the weights
+  alone gain nothing (0.045 to 0.043); with the full set the figure there is 0.039. The
+  paper names "sampling from an infoset using a model of opponent behavior instead of
+  doing so uniformly" as future work, and this is one way of doing it. Two known
+  weaknesses: it rates the opponent's moves as ordinary chess would, and its odds depend
+  on what the engines searched earlier in the game (see "Weights that do not depend on
+  what the engines searched before" below).
+- **A state in which the opponent could have taken our king and did not keeps 2% of its
+  weight** (`KING_MISS` in `opponent.py`). Only states left by a repair can be in that
+  case: the exact update drops them, since the game would have ended.
+- **States with our king attacked count six times** (`ATTACKED_WEIGHT` in
+  `stockfish_search.py`; see [Stockfish search](#stockfish-search)). It covers only a king
+  that is attacked now, by a piece we may not see. Of the 57 games lost by king capture
+  whose replays we have (of about 300 on record), that was the case in 20: the king was
+  attacked by an unseen piece and our move did not deal with it. In 16 the king was
+  checked by a piece in view, took it, and was taken by an unseen piece that guarded it.
+  In 9 the king, not in check, stepped into an unseen attack; in 4 we moved the piece
+  that shielded it; in 1 it left an unseen check for a square another unseen piece
+  attacked; in 7 no safe move was left. With the full weighted set the factor matters
+  little (replay: 0.0373 and 43 kings without it, 0.0377 and 45 with a factor of 2,
+  0.0390 and 46 with 12).
+- **The Stockfish search as a whole**: the average of separate searches of each position,
+  each with full knowledge, `value = -risk + (1 - risk) * mean`. It will take a move that
+  gains a little in most positions and loses the king in one. In one arena game, lost in
+  nine plies, the bot held 13 positions; in one of them a queen it could not see was
+  aimed at its king through its own knight. Taking a pawn with that knight had the best
+  average even with the 13 counted equally (+0.21, against +0.18 and +0.11 for the other
+  two captures), and in 32 replays of the game through its own code the bot played it
+  17 times.
+- **The search looks only at positions that receive one of its 256 draws**
+  (`SCAN_STATES`). A position with under 0.4% of the weight can go unseen, even in a set
+  of 13.
+- **Repetition rule when ahead** (`choose_action` in `search.py`; see
+  [Design choices](#design-choices)).
+- **Positions invented to fill a cut-down set** (`Belief.replenish` and the repair; see
+  [Design choices](#design-choices)), and en passant captures that no held position
+  allows being left out of the candidate moves after a repair. Needed only once a cut
+  set runs thin or empties: about 1% of the replayed decisions (the set itself is cut in
+  15%).
+- **A rising term on the value scale** (`cp_value` in `engine.py`): a small part of the
+  value keeps growing with the engine's score, so that the larger of two winning scores
+  still counts for more. It sits in the code that the leaf values of step 1 under
+  [Next](#next) will come from, so it has to be taken out or kept there on purpose.
+- **The fallback move** (`_fallback_move` in `bot.py`): when a search fails or has under
+  0.1 s, the best capture by piece value that does not walk into a visible attack.
+
+### Tried and dropped
+
+- **A lower factor for attacked states once the belief has weights** (2 instead of 6).
+  Replay says it makes no difference; in eight local games the bot twice lost its king to
+  a queen check that the weights put at 2%, so the 6 was kept.
+- **A margin on the risk of losing the king**: the risk raised by one or two standard
+  errors of its estimate, or its odds doubled or tripled. Taken out when we decided to
+  follow the paper. Replay: 42 to 46 kings lost and 0.0387 to 0.0390, so no better. (On
+  an earlier belief, capped at 800 states and with a factor of 2, it had looked better:
+  48 kings down to 32.)
+- **Mixing the weights half and half with equal odds in the search, or flattening them.**
+  No better on the replayed games.
+- **Counting (observation, move) pairs to avoid repetition.** It missed repetitions
+  reached by different moves and was replaced by the present rule.
+
+### Not built
+
+- **No move that loses the king in any position held**, when some other move loses it in
+  none. A stopgap for the game described above, where it would have changed the move.
+  The replay could only test it on the positions the search looked at, which in most
+  decisions are fewer than the set holds, so as worded it also needs "Look at every
+  position when the set is small" below. Replay: kings lost 46 down to 34, value lost
+  0.0376 up to 0.0389 (worse by 0.0014, with a standard error of 0.0004): it saves kings
+  and gives up more than that elsewhere, by this measure. Applied only to an exact set of
+  at most 256 positions: 42 kings and 0.0383. What it stands in for is step 4 under
+  [Next](#next). There a move is not
+  judged by its average over the positions: what it gives away in one of them is not
+  made up for by what it gains in another, and either the opponent picks the position
+  (Maxmargin) or each position keeps at least half an equal share of the weight
+  (Resolve). The paper itself has no such veto and says that "strong play in FoW chess
+  involves calculated risk-taking".
+- **Count a position six times for a move that loses the king in it**, as every move
+  already is when the king is attacked there. It would reach the 13 of 57 losses in which
+  the king was not attacked at the time (9 of the 20 from the two latest uploads).
+  Neither factor touches the 16 in which the king took a checking piece that an unseen
+  piece guarded. Replay: kings lost 46 down to 36, value lost 0.0376 up to 0.0383 (a
+  difference of 0.0007, with a standard error of 0.0005).
+- **An opponent model that fits the opponents we meet.** The present one models good
+  chess, and on its own gains nothing against the weaker teams. In the game above the
+  opponent gave an easily blocked check from an unseen square and then took a pawn; the
+  model put the real position at about 1% in a typical replay, where equal odds give
+  7.7%. Two forms: make checks and captures likelier than Stockfish rates them, or fit
+  each opponent's habits from the arena's public replays, which show the true boards.
+  The paper does neither: it plays for equilibrium and does not try to exploit an
+  opponent.
+- **Weights that do not depend on what the engines searched before.** The opponent model
+  asks for one-ply scores from the same engine processes that have just searched our
+  move, and Stockfish carries its history tables (not only its hash table) from one
+  search to the next, which shifts those scores. Replaying one game, the real position
+  got about 7% after Black's third move from engines that had searched nothing, the same
+  in every run, and between 1.4% and 22% after the bot's own searches (about 3% in a
+  typical replay). Sending `ucinewgame` before the model is asked (a few milliseconds
+  per engine) makes the weights repeatable to within a few tenths of a percent, as does
+  Stockfish's "Clear Hash" option; re-making the hash table alone does not. Whether the
+  bot then plays better is not known.
+- **Look at every position when the set is small**, instead of only those that receive a
+  draw (see above).
+- **A deeper Stockfish search at the leaves** of the paper's tree. The paper uses depth
+  1 and grows a tree of about a million nodes in five seconds; on two cores ours will be
+  far smaller and could afford more per leaf. Nothing measured.
+- **The paper's own suggestions**: sampling positions by a model of the opponent (the
+  weighted belief is one), and a learned evaluation in place of Stockfish.
