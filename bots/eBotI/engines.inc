@@ -160,6 +160,7 @@ static void evaluate(const std::vector<std::string>& fens, int depth, Clock::tim
     };
     for (size_t i = 0; i < E.size(); ++i) assign(i);
     bool stopped = false;
+    Clock::time_point stop_sent;
     for (;;) {
         bool any = false;
         std::vector<pollfd> fds;
@@ -167,8 +168,9 @@ static void evaluate(const std::vector<std::string>& fens, int depth, Clock::tim
         for (size_t i = 0; i < E.size(); ++i) if (job[i] >= 0 && !E[i].dead) { fds.push_back({E[i].from, POLLIN, 0}); who.push_back(i); any = true; }
         if (!any) break;
         double left = std::chrono::duration<double, std::milli>(deadline - Clock::now()).count();
-        if (left <= 0 && !stopped) { for (size_t i : who) send(E[i], "stop\n"); stopped = true; left = 300; }
-        else if (left <= 0) { for (size_t i : who) { kill_engine(E[i]); job[i] = -1; } break; }
+        if (left <= 0 && !stopped) { for (size_t i : who) send(E[i], "stop\n"); stopped = true; stop_sent = Clock::now(); }
+        if (stopped) left = 500.0 - ms_since(stop_sent);   // the grace after "stop", as engine.py gives
+        if (left <= 0) { for (size_t i : who) { kill_engine(E[i]); job[i] = -1; } break; }
         int r = poll(fds.data(), (nfds_t)fds.size(), (int)std::max(1.0, std::min(left, 50.0)));
         if (r < 0 && errno != EINTR) break;
         for (size_t k = 0; k < fds.size(); ++k) {

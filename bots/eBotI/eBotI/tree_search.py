@@ -23,7 +23,8 @@ MAX_KLUSS = 128
 MAX_SUPPORT = 3
 MIX_MARGIN = 0.02
 FILL_SHARE = 0.4         # of the growing time, at most, for valuing the roots
-EXPAND_SHARE = 0.85      # of the budget: growth stops here, pure solving follows
+EXPAND_SHARE = 0.75      # of the budget: growth stops here, pure solving follows
+SOLVE_RATIO = 2.0        # solving time between two batches, as a multiple of the batch's time
 BATCH = 128              # leaves per round trip to the helper
 LEAF_DEPTH = 1           # the paper's leaf depth; the tree itself supplies the lookahead now
 ROOT_DEPTH = 1
@@ -123,7 +124,7 @@ class TreeSearch:
             expansions += e
             engine_leaves += l
             spent = time.monotonic() - batch_start
-            solve_ms = max(spent, 0.003) * 1000
+            solve_ms = max(spent, 0.003) * 1000 * SOLVE_RATIO
             self._ask(helper, f"tree solve {solve_ms:.1f} {int(time.monotonic() >= half)}")
         left = deadline - time.monotonic()
         if left > 0.005:
