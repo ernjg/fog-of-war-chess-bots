@@ -77,6 +77,11 @@ CASES = {
                                   ["stockfish ready: 2 of 2 engines", "obscuro: sf "]),
     "obscuro_v4 with an engine": ("obscuro_v4", [*OBSCURO, "0.3", "--positions", "off"], "",
                                   ["stockfish ready: 2 of 2 engines", "obscuro: sf "]),
+    # The experimental bot: the growing tree (Obscuro's search), and its PCFR+ fallback.
+    "eBotI with an engine": ("eBotI", [*OBSCURO, "0.4", "--positions", "off"], "",
+                             ["stockfish ready: 2 of 2 engines", "obscuro: gt "]),
+    "eBotI, no engine": ("eBotI", [*OBSCURO, "0.1", "--stockfish", "off", "--positions", "off"], None,
+                         ["stockfish is switched off", "obscuro: gt "]),
 }
 # A stand-in for the helper that answers its first command and nothing after it.
 STUCK_HELPER = """#!/bin/bash
