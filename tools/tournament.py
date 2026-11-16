@@ -26,6 +26,14 @@ def expected(rating: float, other: float) -> float:
     return 1 / (1 + 10 ** ((other - rating) / 400))
 
 
+def bot_name(spec: str) -> str:
+    """A bot given as a run.sh path is named after its folder, not the file."""
+    if "/" not in spec:
+        return spec
+    path = Path(spec).resolve()
+    return path.parent.name if path.name == "run.sh" else path.name
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bots", nargs="+", help="bot names in bots/ (or run.sh paths)")
@@ -45,7 +53,9 @@ def main() -> None:
         local.install_pausing()
         control = local.pause_control_factory
 
-    names = [Path(b).name if "/" in b else b for b in args.bots]
+    names = [bot_name(b) for b in args.bots]
+    if len(set(names)) != len(names):
+        parser.error(f"bot names must be distinct, got {names}; use paths with distinct parent folders")
     argvs = {name: local.bot_argv(spec) for name, spec in zip(names, args.bots)}
     out_dir = args.data / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
