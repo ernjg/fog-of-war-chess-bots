@@ -53,8 +53,9 @@ class ObscuroAgent(Agent):
                  engine: Path | None = None, engine_count: int = 2, weigh_belief: bool = True,
                  positions: Path | None = None, search_mode: str = "stockfish",
                  leaf_depth: int | None = None, root_depth: int | None = None,
-                 perfect_opponent: bool = False):
+                 perfect_opponent: bool = False, check_boost: float = 1.0, capture_boost: float = 1.0):
         self.leaf_depth, self.root_depth = leaf_depth, root_depth
+        self.check_boost, self.capture_boost = check_boost, capture_boost
         self.perfect_opponent = perfect_opponent
         self.search_mode = search_mode    # "obscuro": the growing tree; "pcfr": depth-2 tree; "stockfish": v4's search
         self.obscuro: ObscuroSearch | None = None
@@ -206,6 +207,8 @@ class ObscuroAgent(Agent):
             self.opponent_policy = OpponentPolicy(pool)
             self.policy_logged = (0, 0)
         self.opponent_policy.seconds = min(POLICY_SECONDS, POLICY_TIME_SHARE * self.move_seconds)
+        self.opponent_policy.check_boost = self.check_boost
+        self.opponent_policy.capture_boost = self.capture_boost
         return self.opponent_policy
 
     def _rebuild_belief(self, obs: str, to_move: chess.Color) -> None:
@@ -497,6 +500,10 @@ def main() -> None:
                              "makes); 'off' plays without it")
     parser.add_argument("--engines", type=int, default=2, help="Stockfish processes to run")
     parser.add_argument("--leaf-depth", type=int, default=None, help="Stockfish depth at tree leaves (default 6)")
+    parser.add_argument("--check-boost", type=float, default=1.0,
+                        help="multiply the odds of opponent moves that attack our king (opponent model)")
+    parser.add_argument("--capture-boost", type=float, default=1.0,
+                        help="multiply the odds of opponent captures (opponent model)")
     parser.add_argument("--opponent", choices=("fog", "perfect"), default="fog",
                         help="fog: the opponent in the tree sees only its own view (default); "
                              "perfect: it knows the position and our moves, as v4 assumes")
@@ -517,7 +524,8 @@ def main() -> None:
     agent = ObscuroAgent(args.seed, args.max_states, args.move_time, engine, max(1, args.engines),
                          weigh_belief=not args.equal_odds, positions=positions, search_mode=args.search,
                          leaf_depth=args.leaf_depth, root_depth=args.root_depth,
-                         perfect_opponent=args.opponent == "perfect")
+                         perfect_opponent=args.opponent == "perfect",
+                         check_boost=args.check_boost, capture_boost=args.capture_boost)
     atexit.register(agent.close)
     run(agent)
 

@@ -29,6 +29,11 @@ POLICY_TEMPERATURE = 0.06   # on the value scale of engine.cp_value: 0.06 is abo
 POLICY_SHARE = 0.8          # of the probability, the part that follows Stockfish; the rest is equal odds
 POLICY_SECONDS = 0.5        # at most, per opponent move, for asking the engines
 KING_MISS = 0.02            # chance that an opponent who could take our king did not
+# Fog of War favours moves that ordinary chess rates as ordinary: a check from a square we
+# cannot see, or a capture, is how kings are lost here. Odds of such moves are multiplied
+# by these before mixing (1.0 = off). Measured in games, not chosen from theory.
+CHECK_BOOST = 1.0
+CAPTURE_BOOST = 1.0
 LOSS = -1.0                 # value of a move Stockfish does not list: it gives up the king
 
 OTHER = ""                  # key, in a table of odds, for every move the table does not name
@@ -40,7 +45,7 @@ Policy = Callable[[Sequence[chess.Board], Sequence[int]], list[dict[str, float] 
 
 
 def move_odds(values: dict[str, float], n_moves: int, temperature: float = POLICY_TEMPERATURE,
-              share: float = POLICY_SHARE) -> dict[str, float]:
+              share: float = POLICY_SHARE, boost: dict[str, float] | None = None) -> dict[str, float]:
     """Probabilities for the moves in ``values`` (Stockfish's value of each for the side
     to move), and under OTHER for each of the ``n_moves - len(values)`` moves it left out,
     which are the ones that lose the king at once.
@@ -51,7 +56,8 @@ def move_odds(values: dict[str, float], n_moves: int, temperature: float = POLIC
     n_moves = max(n_moves, len(values), 1)
     top = max(values.values(), default=LOSS)
     other = math.exp((LOSS - top) / temperature)
-    weight = {move: math.exp((value - top) / temperature) for move, value in values.items()}
+    weight = {move: math.exp((value - top) / temperature) * (boost or {}).get(move, 1.0)
+              for move, value in values.items()}
     total = sum(weight.values()) + (n_moves - len(values)) * other
     even = (1.0 - share) / n_moves
     odds = {move: share * w / total + even for move, w in weight.items()}
@@ -59,14 +65,40 @@ def move_odds(values: dict[str, float], n_moves: int, temperature: float = POLIC
     return odds
 
 
+def _gives_check_or_captures(board: chess.Board, move: chess.Move) -> tuple[bool, bool]:
+    captures = board.is_capture(move)
+    board.push(move)
+    try:
+        king = board.king(board.turn)
+        check = king is not None and board.is_attacked_by(not board.turn, king)
+    finally:
+        board.pop()
+    return check, captures
+
+
 class OpponentPolicy:
     """Asks the engines. Whatever goes wrong, a position simply gets no table."""
 
-    def __init__(self, pool: EnginePool, seconds: float = POLICY_SECONDS):
+    def __init__(self, pool: EnginePool, seconds: float = POLICY_SECONDS,
+                 check_boost: float = CHECK_BOOST, capture_boost: float = CAPTURE_BOOST):
         self.pool = pool
         self.seconds = seconds
+        self.check_boost = check_boost
+        self.capture_boost = capture_boost
         self.asked = 0      # positions sent to the engines so far, for the log
         self.answered = 0
+
+    def _boosts(self, board: chess.Board, values: dict[str, float]) -> dict[str, float] | None:
+        if self.check_boost == 1.0 and self.capture_boost == 1.0:
+            return None
+        boosts = {}
+        for uci in values:
+            move = chess.Move.from_uci(uci)
+            check, captures = _gives_check_or_captures(board, move)
+            factor = (self.check_boost if check else 1.0) * (self.capture_boost if captures else 1.0)
+            if factor != 1.0:
+                boosts[uci] = factor
+        return boosts or None
 
     def __call__(self, boards: Sequence[chess.Board], move_counts: Sequence[int]
                  ) -> list[dict[str, float] | None]:
@@ -93,6 +125,6 @@ class OpponentPolicy:
             if depth is None:
                 continue
             values = {move: found[depth] for move, found in result.scores.items()}
-            tables[index] = move_odds(values, move_counts[index])
+            tables[index] = move_odds(values, move_counts[index], boost=self._boosts(boards[index], values))
             self.answered += 1
         return tables
