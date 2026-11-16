@@ -65,6 +65,7 @@ class TreeSearch:
         self.played: chess.Move | None = None
         self.have_tree = False
         self.v_star: float | None = None
+        self.engines: int | None = None   # engines started inside the helper (None: not asked yet)
 
     def forget(self) -> None:
         self.have_tree = False
@@ -78,8 +79,15 @@ class TreeSearch:
 
     def search(self, helper: Helper, states: list[FowBoard], our_moves: list[chess.Move], obs: str,
                budget: float, pool: EnginePool | None, repeat_counts: list[int] | None = None,
-               uniform_states: list[FowBoard] | None = None) -> TreeResult | None:
+               uniform_states: list[FowBoard] | None = None, engine_path: str | None = None,
+               engine_count: int = 2, hash_mb: int = 64) -> TreeResult | None:
         start = time.monotonic()
+        if self.engines is None:
+            self.engines = 0
+            if engine_path:
+                header = self._ask(helper, f"tree engines {engine_count} {hash_mb} {engine_path}")
+                self.engines = int(header.split("ready=")[1])
+        in_helper = self.engines > 0
         deadline = start + budget - RESERVE
         expand_until = start + EXPAND_SHARE * (budget - RESERVE)
         moves = tuple(sorted(our_moves, key=chess.Move.uci))
@@ -95,10 +103,9 @@ class TreeSearch:
         # 1. value the roots (and any carried leaf that is now a root)
         fill_until = start + FILL_SHARE * (expand_until - start)
         while time.monotonic() < fill_until:
-            leaves = self._leaves(helper, BATCH, 0)
-            if not leaves:
+            e, l = self._grow(helper, pool, in_helper, 0, self.root_depth, min(fill_until + 0.2, deadline))
+            if not e:
                 break
-            e, l = self._expand(helper, pool, leaves, self.root_depth, min(fill_until + 0.2, deadline))
             expansions += e
             engine_leaves += l
         info = self._ask(helper, "tree gadget")
@@ -111,12 +118,10 @@ class TreeSearch:
         half = start + budget / 2
         while time.monotonic() < expand_until:
             batch_start = time.monotonic()
-            leaves = self._leaves(helper, BATCH, exploring)
+            e, l = self._grow(helper, pool, in_helper, exploring, self.leaf_depth, min(batch_start + 0.5, expand_until))
             exploring ^= 1
-            if leaves:
-                e, l = self._expand(helper, pool, leaves, self.leaf_depth, min(batch_start + 0.5, expand_until))
-                expansions += e
-                engine_leaves += l
+            expansions += e
+            engine_leaves += l
             spent = time.monotonic() - batch_start
             solve_ms = max(spent, 0.003) * 1000
             self._ask(helper, f"tree solve {solve_ms:.1f} {int(time.monotonic() >= half)}")
@@ -182,6 +187,20 @@ class TreeSearch:
         if header.startswith("err"):
             raise HelperError(f"the helper answered {header!r} to {text[:40]!r}")
         return header
+
+    def _grow(self, helper: Helper, pool: EnginePool | None, in_helper: bool, exploring: int,
+              depth: int, deadline: float) -> tuple[int, int]:
+        """One batch of expansions: inside the helper when it has engines, else through
+        Python's pool. Returns (expanded, engine-valued leaves)."""
+        if in_helper:
+            ms = max((deadline - time.monotonic()) * 1000, 1.0)
+            header = self._ask(helper, f"tree grow {BATCH} {exploring} {depth} {ms:.0f}")
+            fields = dict(word.split("=") for word in header.split()[1:])
+            return int(fields["expanded"]), int(fields["engine_leaves"])
+        leaves = self._leaves(helper, BATCH, exploring)
+        if not leaves:
+            return 0, 0
+        return self._expand(helper, pool, leaves, depth, deadline)
 
     def _leaves(self, helper: Helper, count: int, exploring: int) -> list[tuple[int, FowBoard]]:
         _, rows = helper.ask(f"tree leaves {count} {exploring}", time.monotonic() + ANSWER_SECONDS)

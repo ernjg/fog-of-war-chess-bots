@@ -731,6 +731,7 @@ static bool read_states(std::istream& in, size_t count, std::vector<Pos>& states
 }
 
 #include "tree.inc"
+#include "engines.inc"
 
 // The "tree" commands: see tree.inc. Python drives one search per move with them.
 static void tree_command(std::istringstream& in) {
@@ -757,6 +758,13 @@ static void tree_command(std::istringstream& in) {
         delete T; T = fresh;
         size_t roots = 0; for (const Node& n : T->nodes) if (n.parent < 0) ++roots;
         printf("ok roots=%zu nodes=%zu\n", roots, T->nodes.size());
+    } else if (what == "engines") {
+        // tree engines <count> <hash_mb> <binary>: Stockfish processes of the helper's own
+        unsigned long long count = 2, hash = 64;
+        std::string binary;
+        in >> count >> hash >> binary;
+        int ready = engines::start(binary, (int)count, (int)hash, 8000);
+        printf("ok ready=%d\n", ready);
     } else if (!T) {
         printf("err no tree\n");
     } else if (what == "fill") {
@@ -795,6 +803,26 @@ static void tree_command(std::istringstream& in) {
     } else if (what == "gadget") {
         finish_gadget(*T);
         printf("ok J=%zu\n", T->alt.size());
+    } else if (what == "grow") {
+        // tree grow <count> <exploring> <depth> <ms>: choose leaves, value their children with
+        // the helper's engines (the heuristic where none answers), add them to the tree
+        unsigned long long count = 128; int exploring = 0, depth = 1; double ms = 500;
+        in >> count >> exploring >> depth >> ms;
+        std::vector<int32_t> leaves = choose_leaves(*T, (int)count, exploring);
+        std::vector<std::string> fens;
+        for (int32_t n : leaves) fens.push_back(to_fen(T->nodes[n].pos, T->fullmove));
+        std::vector<engines::Result> results;
+        if (engines::ready_count() > 0 && !fens.empty())
+            engines::evaluate(fens, depth, Clock::now() + std::chrono::milliseconds((long)ms), results);
+        int expanded = 0, engine_leaves = 0;
+        for (size_t i = 0; i < leaves.size(); ++i) {
+            std::unordered_map<std::string, double> none;
+            const std::unordered_map<std::string, double>& values = (i < results.size() && results[i].ok) ? results[i].scores : none;
+            engine_leaves += expand(*T, leaves[i], values);
+            ++expanded;
+        }
+        printf("ok expanded=%d engine_leaves=%d nodes=%zu infosets=%zu root_infoset=%d engines=%d\n",
+               expanded, engine_leaves, T->nodes.size(), T->isets.size(), T->root_infoset, engines::ready_count());
     } else if (what == "solve") {
         double ms = 10; int stability = 0;
         in >> ms >> stability;
@@ -826,6 +854,7 @@ static void tree_command(std::istringstream& in) {
 
 int main(int argc, char** argv) {
     init_tables();
+    signal(SIGPIPE, SIG_IGN);  // a dead engine must not take the helper with it
     if (argc > 1 && !strcmp(argv[1], "selftest")) return selftest();
     std::ios::sync_with_stdio(false);
     S.states.resize(1);
@@ -836,7 +865,7 @@ int main(int argc, char** argv) {
         std::istringstream in(line);
         std::string command;
         in >> command;
-        if (command == "quit") break;
+        if (command == "quit") { engines::shutdown(); break; }
         if (command == "new") {
             std::string side;
             unsigned long long cap = 0, seed = 0;

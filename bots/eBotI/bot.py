@@ -376,7 +376,9 @@ class ObscuroAgent(Agent):
                 self._restart_engines(self.pool, time.monotonic() + budget)
             if in_cpp:
                 result = self.tree.search(helper, self.belief.states, moves, self.tracker.current, budget,
-                                          self.pool, repeat_counts, getattr(self.belief, "uniform_states", None))
+                                          self.pool, repeat_counts, getattr(self.belief, "uniform_states", None),
+                                          engine_path=str(self.engine) if self.engine and self.engine.is_file() else None,
+                                          engine_count=max(1, self.engine_count // 2) if self.engine_count > 1 else 1)
             else:
                 result = self.obscuro.search(self.belief.states, moves, self.tracker.current, budget,
                                              self.pool, repeat_counts)
