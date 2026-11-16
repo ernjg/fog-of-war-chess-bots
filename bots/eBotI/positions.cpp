@@ -730,6 +730,100 @@ static bool read_states(std::istream& in, size_t count, std::vector<Pos>& states
     return true;
 }
 
+#include "tree.inc"
+
+// The "tree" commands: see tree.inc. Python drives one search per move with them.
+static void tree_command(std::istringstream& in) {
+    using namespace tree;
+    std::string what;
+    in >> what;
+    if (what == "start") {
+        // tree start <w|b> <obs> <k> <uci...> <played|-> <max_roots> <max_kluss> <seed>
+        std::string side, obs, played;
+        unsigned long long k = 0, max_roots = 256, max_kluss = 128, seed = 0;
+        in >> side >> obs >> k;
+        std::vector<Move> moves;
+        for (unsigned long long i = 0; i < k; ++i) { std::string u; Move m; in >> u; if (!parse_uci(u, m)) { printf("err bad move\n"); return; } moves.push_back(m); }
+        in >> played >> max_roots >> max_kluss >> seed;
+        if (parse_view(obs).ok == false) { printf("err bad view\n"); return; }
+        Move played_move = 0;
+        bool carry = played != "-" && parse_uci(played, played_move) && T != nullptr;
+        Tree* fresh;
+        if (carry) fresh = carry_over(*T, played_move, obs, moves, (size_t)max_kluss, (size_t)max_roots);
+        else { fresh = new Tree(); fresh->side = side == "b" ? BLACK : WHITE; fresh->rng.seed(seed); set_root_view(*fresh, obs, moves); }
+        fresh->side = side == "b" ? BLACK : WHITE;
+        fresh->fullmove = S.fullmove;
+        delete OLD; OLD = nullptr;
+        delete T; T = fresh;
+        size_t roots = 0; for (const Node& n : T->nodes) if (n.parent < 0) ++roots;
+        printf("ok roots=%zu nodes=%zu\n", roots, T->nodes.size());
+    } else if (!T) {
+        printf("err no tree\n");
+    } else if (what == "fill") {
+        // tree fill <wanted> <attacked_weight_x100> <v_star|none>
+        unsigned long long wanted = 256, attacked = 600;
+        std::string v;
+        in >> wanted >> attacked >> v;
+        if (v != "none" && !v.empty()) { T->v_star = atof(v.c_str()); T->have_v_star = true; }
+        int added = fill(*T, (size_t)wanted, (size_t)attacked);
+        size_t roots = 0; for (const Node& n : T->nodes) if (n.parent < 0) ++roots;
+        printf("ok added=%d roots=%zu\n", added, roots);
+    } else if (what == "leaves") {
+        unsigned long long count = 16; int exploring = 0;
+        in >> count >> exploring;
+        std::vector<int32_t> leaves = choose_leaves(*T, (int)count, exploring);
+        printf("leaves %zu\n", leaves.size());
+        for (int32_t n : leaves) printf("l %d %s\n", n, to_fen(T->nodes[n].pos, T->fullmove).c_str());
+    } else if (what == "children") {
+        // tree children <m>, then m lines: c <node> <k> <uci> <value> ...
+        unsigned long long m = 0;
+        in >> m;
+        int expanded = 0, engine_leaves = 0;
+        std::string row;
+        for (unsigned long long i = 0; i < m && std::getline(std::cin, row); ++i) {
+            std::istringstream r(row);
+            std::string c; long node = -1; unsigned long long k = 0;
+            r >> c >> node >> k;
+            std::unordered_map<std::string, double> values;
+            for (unsigned long long j = 0; j < k; ++j) { std::string u; double v; r >> u >> v; values[u] = v; }
+            if (node < 0 || (size_t)node >= T->nodes.size()) continue;
+            if (T->nodes[node].flags & (EXPANDED | TERMINAL)) continue;
+            engine_leaves += expand(*T, (int32_t)node, values);
+            ++expanded;
+        }
+        printf("ok expanded=%d engine_leaves=%d nodes=%zu infosets=%zu root_infoset=%d\n", expanded, engine_leaves, T->nodes.size(), T->isets.size(), T->root_infoset);
+    } else if (what == "gadget") {
+        finish_gadget(*T);
+        printf("ok J=%zu\n", T->alt.size());
+    } else if (what == "solve") {
+        double ms = 10; int stability = 0;
+        in >> ms >> stability;
+        if (stability) T->track_stability = true;
+        if (T->root_infoset < 0) { printf("err no root infoset\n"); return; }
+        Clock::time_point start = Clock::now();
+        long before = T->iterations;
+        do { iterate(*T); } while (ms_since(start) < ms);
+        printf("ok iters=%ld pmax=%.6f value=%.6f\n", T->iterations - before, T->pmax, tree_value(*T));
+    } else if (what == "result") {
+        if (T->root_infoset < 0) { printf("err no root infoset\n"); return; }
+        const Infoset& is = T->isets[T->root_infoset];
+        size_t roots = 0, carried = 0, kluss = 0;
+        for (const Node& n : T->nodes) if (n.parent < 0) { ++roots; if (!T->fresh_J[n.root_J]) { if (is_root_view_node(*T, n)) ++carried; else ++kluss; } }
+        int max_depth = 0; double leaf_depth = 0; size_t leaves = 0;
+        for (const Node& n : T->nodes) { max_depth = std::max(max_depth, (int)n.depth); if (!(n.flags & EXPANDED)) { leaf_depth += n.depth; ++leaves; } }
+        printf("result %d pmax=%.6f value=%.6f nodes=%zu infosets=%zu iters=%ld roots=%zu carried=%zu kluss=%zu depth=%d leaf_depth=%.2f\n",
+               (int)is.n, T->pmax, tree_value(*T), T->nodes.size(), T->isets.size(), T->iterations, roots, carried, kluss,
+               max_depth, leaves ? leaf_depth / (double)leaves : 0.0);
+        for (int k = 0; k < is.n; ++k) {
+            size_t sl = is.start + k;
+            int stable = T->stable.size() == is.n ? T->stable[k] : 1;
+            printf("a %s %.9g %.9g %d\n", to_uci(T->sides[OURS].slot_move[sl]).c_str(), T->sides[OURS].strategy[sl], T->sides[OURS].u[sl], stable);
+        }
+    } else {
+        printf("err unknown tree command\n");
+    }
+}
+
 int main(int argc, char** argv) {
     init_tables();
     if (argc > 1 && !strcmp(argv[1], "selftest")) return selftest();
@@ -904,6 +998,8 @@ int main(int argc, char** argv) {
                     printf("fen %s\n", to_fen(p, fullmove + (mover == BLACK ? 1 : 0)).c_str());
                 }
             }
+        } else if (command == "tree") {
+            tree_command(in);
         } else {
             printf("err unknown command\n");
         }

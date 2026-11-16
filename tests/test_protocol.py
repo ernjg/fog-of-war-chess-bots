@@ -82,6 +82,8 @@ CASES = {
                              ["stockfish ready: 4 of 4 engines", "obscuro: sf "]),
     "eBotI tree search": ("eBotI", [*OBSCURO, "0.4", "--positions", "off", "--search", "obscuro"], "",
                           ["stockfish ready: 4 of 4 engines", "obscuro: gt "]),
+    "eBotI tree search in C++": ("eBotI", [*OBSCURO, "0.4", "--positions", "HELPER_EBOTI", "--search", "obscuro"], "",
+                                 ["position-set helper ready", "obscuro: gt++ "]),
     "eBotI, no engine": ("eBotI", [*OBSCURO, "0.1", "--stockfish", "off", "--positions", "off"], None,
                          ["stockfish is switched off", "value="]),
 }
@@ -102,6 +104,8 @@ def test_full_game_stdout_is_protocol_only(case: str, tmp_path: Path, request) -
     env.pop("FOW_POSITIONS", None)  # and its own helper
     if "HELPER" in args:
         args = [request.getfixturevalue("helper") if arg == "HELPER" else arg for arg in args]
+    if "HELPER_EBOTI" in args:
+        args = [request.getfixturevalue("helper_ebotI") if arg == "HELPER_EBOTI" else arg for arg in args]
     if "STUCK" in args:
         stuck = tmp_path / "stuck"
         stuck.write_text(STUCK_HELPER)

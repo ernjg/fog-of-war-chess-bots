@@ -27,6 +27,7 @@ import chess  # noqa: E402
 from eBotI.belief import Belief  # noqa: E402
 from eBotI.engine import EnginePool  # noqa: E402
 from eBotI.obscuro_search import ObscuroSearch  # noqa: E402
+from eBotI.tree_search import TreeSearch  # noqa: E402
 from eBotI.opponent import POLICY_SECONDS, OpponentPolicy  # noqa: E402
 from eBotI.position_set import MAX_STATES as FULL_SET_STATES, PositionSet  # noqa: E402
 from eBotI.search import move_budget, own_placement, search  # noqa: E402
@@ -90,6 +91,7 @@ class ObscuroAgent(Agent):
         # number of times. A position can only repeat if they stand as they did before.
         self.stood: Counter[str] = Counter()
         self.obscuro = ObscuroSearch(color, self.rng, self.leaf_depth, self.root_depth, self.perfect_opponent)
+        self.tree = TreeSearch(color, self.rng, self.leaf_depth or 1, self.root_depth or 1)
         log(f"obscuro: playing {'white' if color else 'black'} at {base:g}+{inc:g}")
         self.close()
         self.belief = self._new_belief(color)
@@ -252,6 +254,7 @@ class ObscuroAgent(Agent):
         self.stood[own_placement(self.tracker.current, self.side, move)] += 1
         if self.obscuro is not None:
             self.obscuro.record(move)
+            self.tree.record(move)
         self.tracker.record_move(move)
         self.last_move = move
         return move.uci()
@@ -366,24 +369,32 @@ class ObscuroAgent(Agent):
     def _obscuro_move(self, moves: list[chess.Move], budget: float, spent: float,
                       repeat_counts: list[int] | None) -> chess.Move | None:
         """The growing-tree search's move, or None if it could not build a tree."""
+        helper = getattr(self.belief, "helper", None)
+        in_cpp = helper is not None and not getattr(self.belief, "failure", "") and not helper.dead
         try:
             if self.pool is not None:
                 self._restart_engines(self.pool, time.monotonic() + budget)
-            result = self.obscuro.search(self.belief.states, moves, self.tracker.current, budget,
-                                         self.pool, repeat_counts)
+            if in_cpp:
+                result = self.tree.search(helper, self.belief.states, moves, self.tracker.current, budget,
+                                          self.pool, repeat_counts, getattr(self.belief, "uniform_states", None))
+            else:
+                result = self.obscuro.search(self.belief.states, moves, self.tracker.current, budget,
+                                             self.pool, repeat_counts)
         except Exception:
-            log("obscuro: tree search failed")
+            log("obscuro: tree search failed" + (" (C++ tree)" if in_cpp else ""))
             traceback.print_exc(file=sys.stderr)
             self.obscuro.forget()
+            self.tree.forget()
             return None
         if result is None:
             log(f"obscuro: tree search found no usable root among {len(self.belief)} states")
             return None
-        log(f"obscuro: gt {result.move.uci()} value={result.value:+.3f} roots={result.roots} "
+        log(f"obscuro: gt{'++' if in_cpp else ''} {result.move.uci()} value={result.value:+.3f} roots={result.roots} "
             f"(carried={result.carried} kluss={result.kluss}) nodes={result.nodes} "
             f"infosets={result.infosets} expanded={result.expansions} sf_leaves={result.engine_leaves} "
             f"iters={result.iterations} pmax={result.pmax:.2f} mixed={result.mixed} "
             f"risk={result.risk:.2f} scan={result.scanned} "
+            + (f"depth={result.depth}/{result.leaf_depth:.1f} " if in_cpp else "") +
             f"|P|={self._belief_size()} budget={budget:.2f}s belief_update={spent:.2f}s"
             + (" repeat_avoided" if result.repeat_avoided else ""))
         return result.move
@@ -510,7 +521,8 @@ def main() -> None:
                         help="fog: the opponent in the tree sees only its own view (default); "
                              "perfect: it knows the position and our moves, as v4 assumes")
     parser.add_argument("--root-depth", type=int, default=None, help="Stockfish depth under the roots (default 8)")
-    parser.add_argument("--search", choices=("stockfish", "obscuro", "pcfr"), default="stockfish",
+    parser.add_argument("--search", choices=("stockfish", "obscuro", "pcfr"),
+                        default=os.environ.get("FOW_SEARCH", "stockfish"),
                         help="stockfish: score our moves with Stockfish on each position (default, as v4); "
                              "obscuro: the growing tree solved by PCFR+; pcfr: the fixed depth-2 tree")
     parser.add_argument("--equal-odds", action="store_true",

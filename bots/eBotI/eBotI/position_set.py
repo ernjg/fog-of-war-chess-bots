@@ -73,7 +73,7 @@ class Helper:
             words = header.split()
             if not words or words[0] == "err":
                 raise HelperError(f"the helper answered {header[:80]!r}")
-            more = int(words[2]) if words[0] == "parents" else int(words[1]) if words[0] in ("sample", "dump", "usample") else 0
+            more = int(words[2]) if words[0] == "parents" else int(words[1]) if words[0] in ("sample", "dump", "usample", "leaves", "result") else 0
             return header, [self._line(deadline) for _ in range(more)]
         except HelperError:
             self.kill()  # after one bad answer nothing it says can be matched to a question
