@@ -336,14 +336,16 @@ class Belief:
             counts.append(len(moves))
             for move in moves:
                 board.push(move)
-                if (not side_to_move_wins(board) and view.agrees_with(board)
-                        and observation(board, self.side) == obs):
-                    found = at.setdefault(state_key(board), len(survivors))
-                    if found == len(survivors):
-                        survivors.append(board.copy(stack=False))
-                        origins.append([])
-                    origins[found].append((index, move))
-                board.pop()
+                try:
+                    if (not side_to_move_wins(board) and view.agrees_with(board)
+                            and observation(board, self.side) == obs):
+                        found = at.setdefault(state_key(board), len(survivors))
+                        if found == len(survivors):
+                            survivors.append(board.copy(stack=False))
+                            origins.append([])
+                        origins[found].append((index, move))
+                finally:
+                    board.pop()
         return survivors, origins, counts
 
     def _consistent(self, obs: str) -> list[int]:
