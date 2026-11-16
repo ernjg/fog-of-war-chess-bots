@@ -7,10 +7,10 @@ import argparse
 import atexit
 import os
 import random
-from collections import Counter
 import sys
 import time
 import traceback
+from collections import Counter
 from pathlib import Path
 
 # Make `fow` importable from the flat packaged layout (fow/ next to bot.py)
