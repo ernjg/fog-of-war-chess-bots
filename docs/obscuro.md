@@ -45,9 +45,11 @@ Step 1 is the same. Steps 2 to 4 are replaced (`stockfish_search.py`, `engine.py
 
 Why this is a fair swap: in the depth-2 game two belief states never look alike to the
 opponent, because it always sees its own pieces. So the PCFR+ search already treats the
-opponent as knowing the position, and Stockfish does the same, only deeper and with a real
-evaluation. What neither search has is the paper's reasoning about what the opponent does
-not know about *our* pieces (KLUSS roots).
+opponent as knowing which position is the real one. The only thing it keeps from the
+opponent is a move of ours that the opponent cannot see. Stockfish shows it that move as
+well and otherwise does the same, only deeper and with a real evaluation. What neither
+search has is the paper's reasoning about what the opponent does not know about where
+*our* pieces stood before that move (KLUSS roots).
 
 Why attacked states count six times: an opponent who can attack our king out of sight
 usually does, more often than P allows for. Replaying 28 games (1,053
@@ -254,6 +256,10 @@ enough), and point each bot at its own with `--stockfish` in a small `run.sh` of
 the same binary file share the network in memory, and a paused bot's engines then hold up
 the other bot's engine start by about a second each, which can leave it with fewer.
 
+The versions that were uploaded to the arena are kept as bots of their own, each with its
+own build. `docs/versions.md` lists them and says how to play them against the working
+bot. Leave `FOW_STOCKFISH` unset for those games.
+
 In the arena, `bots/obscuro/build.sh` compiles the source that travels in the ZIP
 (`uv run tools/package.py obscuro` copies the whole bot folder, about 80 MB zipped). It
 logs the sandbox's CPU flags, compiles with plain `g++`, three files at a time, and then
@@ -409,9 +415,10 @@ state's count is passed to the engine.)
 
 ## Next
 
-The paper's own steps, one at a time, in the order its ablations suggest. The Stockfish
-search averages over positions searched separately, which is not what Obscuro does; the
-PCFR+ search is the part with Obscuro's shape, and these build on it:
+The paper's own steps, one at a time. The first has the largest effect among the paper's
+ablations, and the others are in the order we plan to build them. The Stockfish search
+averages over positions searched separately, which is not what Obscuro does; the PCFR+
+search is the part with Obscuro's shape, and these build on it:
 
 1. **Stockfish values at the leaves** of the PCFR+ tree in place of the material heuristic
    (the largest effect among the paper's ablations: the full program scored 81.9%
@@ -427,6 +434,147 @@ PCFR+ search is the part with Obscuro's shape, and these build on it:
 
 Changes of our own come after these. They are collected under
 [Beyond the paper](#beyond-the-paper).
+
+### Building the next version
+
+This part is the plan for whoever builds the next version. Nothing in it is built yet.
+
+The next version is step 1 above: the PCFR+ search the bot already has, with Stockfish
+scoring the leaves. It is called the base below. Our own ideas are added to the base
+afterwards, one at a time, so that each one is measured on its own.
+
+The arena gives the next upload its number. Until then the work happens in the working
+bot, `bots/obscuro` with `fow/obscuro`, and `obscuro_v4` is the fixed opponent (see
+`docs/versions.md`).
+
+The versions so far, with the numbers the arena gave them (`docs/versions.md` has their
+records):
+
+- **v2** (`obscuro_v2`) plays the PCFR+ search and nothing else. It has no Stockfish.
+- **v3** (`obscuro_v3`) adds the Stockfish search and plays it. From v3 on the PCFR+ search
+  only runs when the Stockfish search has no answer.
+- **v4** (`obscuro_v4`) adds the weights on the positions and the C++ helper that keeps
+  all of them. It is the version in the arena, and the working bot is v4 with small fixes.
+- **The next version** is v5 if it is the next upload. Its base is a hybrid: the search
+  is v2's, with Stockfish at the leaves, and everything around the search is v4's (the
+  set of positions, the C++ helper, the engine code). The base does not use v4's Stockfish
+  search or v4's weights.
+
+| | v2: the PCFR+ search (the backup since v3) | v4: the Stockfish search (plays today) | Next version: the base |
+| --- | --- | --- | --- |
+| What picks the move | The PCFR+ search | The Stockfish search, with the PCFR+ search only as backup | The PCFR+ search, with Stockfish scores |
+| Positions it looks at | Up to 200 picked at random, all counted equally | Up to 256, picked by 256 draws by weight. The 64 drawn most often are searched | Same as v2 |
+| Tree | One game over all positions: our move, then the reply (2 plies) | A separate Stockfish search for each position, usually 5 to 8 plies | Same as v2 |
+| Score at the end of a line | Material plus squares seen | Stockfish | **Stockfish, as in v4, but one ply deep** |
+| Opponent in the tree | Knows the position, except a move of ours it cannot see | Sees the whole board | Same as v2 |
+| Rules in the tree | Fog of War | Ordinary chess after our first move | Same as v2 |
+| Final pick | PCFR+ solves the game and the top move is played | Best weighted average, with a lost king counted as -1. Positions with our king attacked count six times | Same as v2 |
+| Possible positions kept by | Python, a random sample of at most 1,500 once there are more | The C++ helper, all of them up to 200,000 | Same as v4 |
+| Weights on the positions | None | From Stockfish's rating of the opponent's moves | Switched off, so positions count equally |
+| Stockfish is used for | Nothing | Choosing the move and the weights | Scoring the leaves of the tree |
+
+So the base is v2's search with one row changed: the score at the end of a line.
+
+**The base alone is probably weaker than v4.** It looks two plies ahead plus a one-ply
+Stockfish score, where v4's Stockfish search looks 5 to 8 plies ahead in each position. It
+also runs without our weights. So the Stockfish search stays the search that plays, and
+the base is built beside it behind a switch. The gain is expected from the deeper tree of
+step 2 and from steps 4 and 5. None of it is measured.
+
+### What the base changes, file by file
+
+The v2 and v4 columns say what each file is in those versions. The last column says
+whether the base uses the file, which version it takes it from, and what has to change.
+
+| File | What it does | v2 | v4 | Next version: the base |
+| --- | --- | --- | --- | --- |
+| `bot.py` | Runs the game: updates the positions, calls a search, sends the move | Calls the PCFR+ search | Calls the Stockfish search first, and the PCFR+ search when that has no answer | **Used, from v4, with a change.** It gets a switch that makes the PCFR+ search play, for example `--search pcfr`. The default stays the Stockfish search |
+| `subgame.py` | Builds the PCFR+ tree | Present | Identical to v2 | **Used, from v2, with the main change.** Leaves get their score from Stockfish through `engine.py` |
+| `search.py` | Runs the PCFR+ search: picks positions, builds the tree, solves it | Present | The same search, plus the rule against repeating positions that came in v3 | **Used, from v4, with a small change.** It also takes the engine pool and hands it to the tree |
+| `solver.py`, `regret.py` | The PCFR+ math | Present | The same, apart from two lines added to `regret.py` in v3 | **Used as it is.** The same files as in v4 |
+| `evaluation.py` | Material plus squares seen | Scores the leaves | Identical to v2. Scores the leaves of the backup | **Not used,** except when there is no Stockfish |
+| `engine.py` | Starts Stockfish and reads its scores | Not there | There since v3 | **Used as it is, from v4.** It now also scores the leaves, through the same `EnginePool` |
+| `stockfish_search.py` | The Stockfish search | Not there | There since v3, with the weights added in v4 | **Not used by the base.** The file stays, because the Stockfish search keeps playing until the base wins |
+| `opponent.py` | The weights: has Stockfish rate each move the opponent could have made | Not there | New in v4 | **Not used by the base.** The base runs with `--equal-odds`. The file comes back with the weights add-on |
+| `belief.py` | Keeps the possible positions in Python | The only keeper | Used when the helper is missing or lost, and for repairs and top-ups | **Used as it is, from v4** |
+| `position_set.py`, `positions.cpp` | Keep every possible position, in C++ | Not there | New in v4 | **Used as it is, from v4** |
+
+What scoring the leaves with Stockfish takes:
+
+1. **One Stockfish call per opponent node.** The paper runs Stockfish in MultiPV mode at
+   depth 1 on a node, which gives a value for every child of that node in one call. In our
+   tree the node is the position after our move, and its children are the leaves after
+   each reply. `opponent.py` already makes this kind of call. The value Stockfish gives is
+   for the opponent, so its sign is turned.
+2. **Send the calls in batches.** `EnginePool.run` takes a list of jobs and a deadline.
+   `SubgameBuilder` scores one leaf at a time today, so it has to collect the opponent
+   nodes of a root first and then ask for all of them at once.
+3. **Keep our own rules where the game differs from chess.** A position in which the
+   opponent can take our king is a loss, and a reply that leaves the opponent's king
+   capturable is a win. Both are already decided in `subgame.py` without an engine, and
+   Stockfish does not list such replies. A reply that castles out of or through check is
+   not listed either. It has to be scored from the position after it, as
+   `stockfish_search.py` does for our own castling. A position that `engine_accepts`
+   rejects cannot be sent, so such a root is left out.
+4. **Decide on the rising term.** `cp_value` in `engine.py` adds a small term that keeps
+   growing with the engine's score (see [In the bot now](#in-the-bot-now)). The leaf values
+   come from that function, so the term is either kept there on purpose or taken out.
+5. **Set the time split again.** `BUILD_SHARE` and `MAX_ROOTS` in `search.py` were chosen
+   for a tree that costs 20 to 30 ms a root in Python. A root now also costs one engine
+   call for each move of ours. Measure it before choosing new numbers.
+6. **Run with `--equal-odds`.** With the weights on, the helper hands Python a sample
+   drawn by weight once the set has more than 256 positions. The roots would then follow
+   the weights without anyone having decided that.
+7. **Test the key behaviours** with the scripted engine in `tests/fake_uci_engine.py`: a
+   leaf gets the engine's value with the sign turned, a leaf decided by a king capture
+   stays at +1 or -1 without an engine call, and without an engine the search scores by
+   material as it does today.
+
+### Add-ons, one at a time
+
+Each of these is off in the base. Turn one on, compare it with the base, and keep it only
+if it wins.
+
+| Add-on | Before (the base) | After | Where the code is | What we know |
+| --- | --- | --- | --- | --- |
+| Weights on the positions | Every root counts the same | A root counts by its weight from the opponent model | The weights exist (`opponent.py`, `positions.cpp`). `subgame.py` gives every root an equal share in `root_weight` and would take the weights there. Run without `--equal-odds` | In the Stockfish search the weights lowered the value lost per move from 0.048 to 0.041 on replayed games. Nothing is measured in the PCFR+ tree |
+| Six times the weight where our king is attacked | No extra weight | A root in which our king is attacked counts six times | `ATTACKED_WEIGHT` in `stockfish_search.py`. The tree would multiply `root_weight` by it | In the Stockfish search with the full weighted set the factor mattered little on replayed games |
+| A deeper Stockfish search at the leaves | Depth 1 | Depth 2 or more | The depth of the leaf job | Nothing is measured. It costs time per root, so the tree gets fewer roots |
+| Clear the engines' memory before the weights are asked | The weights depend on what the engines searched before | The weights are repeatable | `opponent.py`, by sending `ucinewgame` first | It makes the weights repeatable to within a few tenths of a percent. Whether the bot then plays better is not known. Only useful together with the weights |
+| An opponent model fitted to the teams we meet | The model rates moves as good chess would | Checks and captures are rated likelier, or each opponent's habits are fitted from public replays | `opponent.py` | Not built. Only useful together with the weights |
+
+Three things need no decision:
+
+- The rule against repeating positions (`choose_action` in `search.py`) is already part of
+  the PCFR+ search. Keep it on in every stage, so that two stages differ in one thing only.
+- The repairs and top-ups of the position set and the fallback move stay as they are.
+- The risk formula of the Stockfish search needs no add-on. In the tree a move that loses
+  the king in a position is worth -1 there, which is what that formula works out.
+
+### The comparisons to run
+
+Play the matches as `docs/versions.md` describes: both listing orders, at least 60 games
+each way, at 36+0.4, each bot with its own build and with `FOW_STOCKFISH` and
+`FOW_POSITIONS` unset.
+
+| Stage | Play | Against | The question |
+| --- | --- | --- | --- |
+| 1 | The base | The PCFR+ search with material leaves | Do Stockfish leaves beat material leaves? They should, clearly. If they do not, something is wrong in the base |
+| 2 | The base | `obscuro_v4` | How far behind the Stockfish search is the base? |
+| 3 | The base with one add-on | The base | Does that add-on help? One match for each add-on |
+| 4 | The base with the add-ons that won | `obscuro_v4` | Is it stronger than what plays in the arena? |
+
+Stages 1 and 3 need two settings of the working bot in one match. `tools/tournament.py`
+accepts the path of a `run.sh`, so a folder that holds only a `run.sh` starting
+`bots/obscuro/bot.py` with the flags of one setting is enough. Give it a name without a
+version number. None is set up yet.
+
+Reading a result: over 120 games the score of two equal bots still moves by about 4.5
+points up or down (one standard error), so a score under 59% is not a result. Results here
+also come in streaks (see `docs/versions.md`), so repeat a match before believing it.
+
+Upload a new version only when it wins stage 4 by that measure. The arena record is the
+final word. After the upload, freeze the version with the steps in `docs/versions.md`.
 
 ## Beyond the paper
 
