@@ -30,9 +30,10 @@ from .search import choose_action
 MAX_ROOTS = 64             # belief states Stockfish scores per move
 SCAN_STATES = 1024         # belief states checked for moves that lose the king at once (0.1 ms each)
 SCAN_SHARE = 0.1           # of the budget, at most, for that check
-MAX_DEPTH = 12
+MAX_DEPTH = 18             # with few states the position is nearly known: search it like chess
 MIN_SLICE = 0.02           # seconds of search per position, at least
-MAX_SLICE = 1.0            # and at most: with few states left, bank the time instead
+MAX_SLICE = 2.0            # and at most: with few states left, bank the rest
+UNIFORM_SHARE = 0.3        # of the king-loss risk, the part estimated on an equal-odds sample
 RESERVE = 0.06             # seconds kept back for stopping the engines and choosing
 MIN_ENGINE_SECONDS = 0.05
 DRAW = 0.0
@@ -354,8 +355,8 @@ def _apply_fog_rules(root: _Root, our_moves: Sequence[chess.Move], values: np.nd
                 values[index] = DRAW
 
 
-def weigh(evidence: Evidence,
-          attacked_weight: float = ATTACKED_WEIGHT) -> tuple[np.ndarray, np.ndarray]:
+def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
+          uniform_risk: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(value, risk) of each move from the evidence.
 
     Every state counts as often as it was drawn (once each, unless the belief has
@@ -373,6 +374,10 @@ def weigh(evidence: Evidence,
     if evidence.root_count is not None:
         root_weight = root_weight * evidence.root_count
     risk = scan_weight @ evidence.scan_suicide / scan_weight.sum()
+    if uniform_risk is not None:
+        # the weighted sample can leave out the true position; an equal-odds sample cannot
+        # be fooled by the weights, so part of the risk is read off it
+        risk = (1.0 - UNIFORM_SHARE) * risk + UNIFORM_SHARE * uniform_risk
     safe = ~evidence.root_suicide
     count = root_weight @ safe
     total = root_weight @ np.where(safe, evidence.root_values, 0.0)
@@ -385,10 +390,27 @@ def weigh(evidence: Evidence,
     return -risk + (1.0 - risk) * when_safe, risk
 
 
+def suicide_share(states: Sequence[FowBoard], our_moves: Sequence[chess.Move],
+                  attacked_weight: float = ATTACKED_WEIGHT) -> np.ndarray | None:
+    """Per move, the share of ``states`` (weighted, king attacked counts more) in which it
+    loses the king at once; None if no state fits our view."""
+    total = 0.0
+    suicide = np.zeros(len(our_moves))
+    for state in states:
+        classes = classify(state, our_moves)
+        if classes is None:
+            continue
+        weight = attacked_weight if state.is_check() else 1.0
+        total += weight
+        suicide[list(classes.suicide)] += weight
+    return suicide / total if total > 0 else None
+
+
 def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
                      our_moves: Sequence[chess.Move], side: chess.Color, budget: float,
                      rng: random.Random, repeat_counts: Sequence[int] | None = None,
-                     weights: Sequence[float] | None = None) -> StockfishResult | None:
+                     weights: Sequence[float] | None = None,
+                     uniform_states: Sequence[FowBoard] | None = None) -> StockfishResult | None:
     """The move with the best value over sampled ``states``; see ``weigh`` for the value.
 
     ``weights`` is given when the belief has them (one per state) and None when its
@@ -401,7 +423,8 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
                       weights)
     if evidence is None:
         return None
-    value, risk = weigh(evidence)
+    uniform_risk = suicide_share(uniform_states, our_moves) if uniform_states else None
+    value, risk = weigh(evidence, uniform_risk=uniform_risk)
 
     # Choose: exact ties at random, and not the same shuffle again when winning.
     ranked = value + 1e-9 * np.array([rng.random() for _ in our_moves])

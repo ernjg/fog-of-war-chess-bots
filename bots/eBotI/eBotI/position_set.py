@@ -34,6 +34,7 @@ from .belief import HEAD_SHARE, MIN_POOL, Belief
 from .opponent import KING_MISS, OTHER, Policy
 
 SAMPLE_STATES = 1024     # states handed to the search: stockfish_search.SCAN_STATES draws
+UNIFORM_STATES = 512     # and, when the set is sampled by weight, this many drawn with equal odds
 MAX_STATES = 200_000     # the most the helper keeps; a larger set is cut down, as in Belief
 FALLBACK_STATES = 1500   # the cap of the Python belief that takes over if the helper is lost
 ASK_STATES = 512         # states per opponent move that the policy is asked about, at most
@@ -72,7 +73,7 @@ class Helper:
             words = header.split()
             if not words or words[0] == "err":
                 raise HelperError(f"the helper answered {header[:80]!r}")
-            more = int(words[2]) if words[0] == "parents" else int(words[1]) if words[0] in ("sample", "dump") else 0
+            more = int(words[2]) if words[0] == "parents" else int(words[1]) if words[0] in ("sample", "dump", "usample") else 0
             return header, [self._line(deadline) for _ in range(more)]
         except HelperError:
             self.kill()  # after one bad answer nothing it says can be matched to a question
@@ -157,6 +158,7 @@ class PositionSet:
         self.rng = rng or random.Random()
         self.states: list[FowBoard] = [FowBoard()]
         self._weights = [1.0]
+        self.uniform_states: list[FowBoard] = []  # see _fetch
         self.weighted = False
         self.exact = True
         self.repairs = 0
@@ -317,6 +319,12 @@ class PositionSet:
         if not states:
             raise HelperError("the helper has no states")
         self.states, self._weights = states, weights
+        self.uniform_states = []
+        if word == "sample":
+            # a second sample with equal odds: the king-safety scan looks at both, since the
+            # weights can rate the true position too unlikely to be drawn
+            _, rows = self.helper.ask(f"usample {UNIFORM_STATES}", time.monotonic() + ANSWER_SECONDS)
+            self.uniform_states = [FowBoard(row.split(" ", 2)[2]) for row in rows]
 
     def _load(self, belief: Belief) -> None:
         """Hand the helper the states of a Python belief. They are a guess, never the full set."""

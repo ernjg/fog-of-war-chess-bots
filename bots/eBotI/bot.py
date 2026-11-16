@@ -402,7 +402,8 @@ class ObscuroAgent(Agent):
             budget = deadline - time.monotonic()
             weights = self.belief.weights if self.belief.weighted else None
             result = stockfish_search(pool, self.belief.states, moves, self.side, budget,
-                                      self.rng, repeat_counts, weights)
+                                      self.rng, repeat_counts, weights,
+                                      getattr(self.belief, "uniform_states", None))
         except Exception:
             log("obscuro: stockfish search failed")
             traceback.print_exc(file=sys.stderr)
@@ -498,7 +499,8 @@ def main() -> None:
     parser.add_argument("--stockfish", default=os.environ.get("FOW_STOCKFISH", str(DEFAULT_ENGINE)),
                         help="Stockfish binary (default: $FOW_STOCKFISH, else the one build.sh "
                              "makes); 'off' plays without it")
-    parser.add_argument("--engines", type=int, default=2, help="Stockfish processes to run")
+    parser.add_argument("--engines", type=int, default=int(os.environ.get("FOW_ENGINES", "4")),
+                        help="Stockfish processes to run (default $FOW_ENGINES, else 4: the arena has four threads)")
     parser.add_argument("--leaf-depth", type=int, default=None, help="Stockfish depth at tree leaves (default 6)")
     parser.add_argument("--check-boost", type=float, default=1.0,
                         help="multiply the odds of opponent moves that attack our king (opponent model)")

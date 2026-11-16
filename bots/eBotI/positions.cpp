@@ -835,11 +835,19 @@ int main(int argc, char** argv) {
             S.ms = 0;
             if (S.states.size() > S.cap) { S.exact = false; cut(S.cap); }
             report("ok", S.states.size(), S.states.size(), S.states.size());
-        } else if (command == "sample" || command == "dump") {
+        } else if (command == "sample" || command == "dump" || command == "usample") {
+            // usample: `count` distinct states drawn with equal odds whatever their weights,
+            // so that a check over them can catch a truth the weights rate unlikely
             unsigned long long count = 0;
             in >> count;
             std::vector<std::pair<uint32_t, double>> chosen;
             if (command == "sample") sample((size_t)count, chosen);
+            else if (command == "usample") {
+                std::vector<uint32_t> order(S.states.size());
+                std::iota(order.begin(), order.end(), 0u);
+                for (size_t i = order.size(); i > 1; --i) std::swap(order[i - 1], order[S.rng.below(i)]);
+                for (size_t i = 0; i < std::min<size_t>((size_t)count, order.size()); ++i) chosen.push_back({order[i], 1.0});
+            }
             else for (size_t i = 0; i < std::min<size_t>((size_t)count, S.states.size()); ++i) chosen.push_back({(uint32_t)i, S.weights[i]});
             printf("%s %zu\n", command.c_str(), chosen.size());
             for (const auto& entry : chosen) printf("s %.17g %s\n", entry.second, to_fen(S.states[entry.first], S.fullmove).c_str());
