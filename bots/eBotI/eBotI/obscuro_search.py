@@ -16,12 +16,16 @@ from referee import FowBoard, fow_moves
 from .belief import state_key
 from .engine import EnginePool
 from .gametree import NEVER_EXIT, OURS, Expansion, GameTree
+from .rules import side_to_move_wins
 from .search import choose_action
+from .stockfish_search import ATTACKED_WEIGHT, SCAN_STATES, classify
 
 MIN_INFOSET_SIZE = 256   # roots added from the belief until this many (MinInfosetSize, Fig. 9)
 MAX_KLUSS = 128          # positions the opponent confuses with ours, carried from the old tree
 MAX_SUPPORT = 3          # moves mixed between when the strategy is safe (C.8)
-FILL_SHARE = 0.3         # of the expansion time, at most, for adding and expanding roots
+FILL_SHARE = 0.6         # of the expansion time, at most, for adding and expanding roots: at our
+                         # node rate the roots decide the move, expansions refine it
+MIX_MARGIN = 0.02        # a stable move may be mixed in if its value is within this of the best
 EXPAND_SHARE = 0.8       # of the budget: tree growth stops here, pure solving follows (3.4)
 BATCH = 16               # leaves expanded between two solving spells
 RESERVE = 0.08           # seconds kept back at the end of the budget
@@ -43,12 +47,18 @@ class ObscuroResult:
     mixed: int            # moves the final strategy was sampled from
     repeat_avoided: bool
     strategy: tuple[float, ...]
+    risk: float           # share of scanned positions in which the move loses the king
+    scanned: int
 
 
 class ObscuroSearch:
-    def __init__(self, side: chess.Color, rng: random.Random):
+    def __init__(self, side: chess.Color, rng: random.Random, leaf_depth: int | None = None,
+                 root_depth: int | None = None, perfect_opponent: bool = False):
         self.side = side
         self.rng = rng
+        self.perfect_opponent = perfect_opponent
+        self.leaf_depth = leaf_depth
+        self.root_depth = root_depth
         self.tree: GameTree | None = None
         self.v_star: float | None = None
         self.played: chess.Move | None = None
@@ -90,6 +100,11 @@ class ObscuroSearch:
         else:
             tree = GameTree(self.side, self.rng)
             tree.set_root_view(obs, moves)
+        tree.perfect_opponent = self.perfect_opponent
+        if self.leaf_depth:
+            tree.leaf_depth = self.leaf_depth
+        if self.root_depth:
+            tree.root_depth = self.root_depth
         have = {state_key(tree.boards[n]) for n in tree.boards}
         fresh: list[int] = []
         wanted = min(len(states), MIN_INFOSET_SIZE)
@@ -104,7 +119,9 @@ class ObscuroSearch:
             if not set(moves) <= set(fow_moves(board)):
                 continue
             have.add(state_key(board))
-            J = tree.new_J(NEVER_EXIT)       # fixed below, once Stockfish has valued the root
+            king = board.king(self.side)
+            attacked = king is not None and board.is_attacked_by(not self.side, king)
+            J = tree.new_J(NEVER_EXIT, weight=ATTACKED_WEIGHT if attacked else 1.0)  # alt fixed below
             fresh.append(tree.add_root(board, J, 1.0))
             if len(fresh) % BATCH == 0:
                 tree.expand_nodes(fresh[-BATCH:], pool, min(fill_until, deadline), stats)
@@ -145,37 +162,63 @@ class ObscuroSearch:
                 tree.track_stability = True
             tree.iterate()
 
-        # 3. the move (Fig. 8, C.8)
+        # 3. the move (Fig. 8, C.8), with v4's king-safety check on top: the share of a wide
+        #    sample of positions in which a move loses the king at once, which the sampled
+        #    roots alone can miss
         strategy = tree.root_strategy()
         values = tree.root_action_values()
-        top = int(np.argmax(strategy))
-        play = strategy.copy()
+        risk, scanned = self._risk(states, moves)
+        final_values = -risk + (1.0 - risk) * values
+        top = int(np.argmax(final_values))
+        play = np.zeros_like(strategy)
+        play[top] = 1.0
         mixed = 1
         if tree.pmax <= 0.0 and tree.stable is not None:   # Maxmargin: safe, so mixing is allowed
-            allowed = tree.stable.copy()
+            allowed = tree.stable & (final_values >= final_values[top] - MIX_MARGIN) & (strategy > 0)
             allowed[top] = True
             if allowed.sum() > MAX_SUPPORT:
                 ranked = np.argsort(-strategy)
                 keep = np.zeros_like(allowed)
                 keep[[i for i in ranked if allowed[i]][:MAX_SUPPORT]] = True
                 allowed = keep
-            play[~allowed] = 0.0
+            play = np.where(allowed, strategy, 0.0)
             play[top] += strategy[~allowed].sum()
+            if play.sum() <= 0:
+                play[top] = 1.0
             mixed = int((play > 0).sum())
-        if play.sum() <= 0:
-            play = np.zeros_like(play)
-            play[top] = 1.0
         chosen = self.rng.choices(range(len(moves)), play)[0] if mixed > 1 else top
         counts = None if repeat_counts is None else np.asarray(
             [repeat_counts[our_moves.index(m)] for m in moves], dtype=float)
         pick = np.zeros_like(play)
         pick[chosen] = 1.0
-        final = choose_action(pick, values, float(values[chosen]), counts)
+        final = choose_action(pick, final_values, float(final_values[chosen]), counts)
 
         self.tree = tree
         self.v_star = tree.value()
         self.played = moves[final]
-        return ObscuroResult(moves[final], float(values[final]), len(tree.boards), carried, kluss,
+        return ObscuroResult(moves[final], float(final_values[final]), len(tree.boards), carried, kluss,
                              tree.n_nodes, tree.n_infosets, stats.expanded, stats.engine_leaves,
                              tree.iterations, tree.pmax, mixed, final != chosen,
-                             tuple(float(v) for v in strategy))
+                             tuple(float(v) for v in strategy), float(risk[final]), scanned)
+
+    def _risk(self, states: list[FowBoard], moves: tuple[chess.Move, ...]) -> tuple[np.ndarray, int]:
+        """Per move, the weighted share of up to SCAN_STATES positions in which it loses the
+        king at once; positions with our king attacked count ATTACKED_WEIGHT times (as v4)."""
+        order = list(range(len(states)))
+        self.rng.shuffle(order)
+        total = 0.0
+        suicide = np.zeros(len(moves))
+        scanned = 0
+        for index in order[:SCAN_STATES]:
+            board = states[index]
+            if board.turn != self.side:
+                continue
+            classes = classify(board, moves)
+            if classes is None:
+                continue
+            king = board.king(self.side)
+            weight = ATTACKED_WEIGHT if king is not None and board.is_attacked_by(not self.side, king) else 1.0
+            total += weight
+            suicide[list(classes.suicide)] += weight
+            scanned += 1
+        return (suicide / total if total > 0 else suicide), scanned

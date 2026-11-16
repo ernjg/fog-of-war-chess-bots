@@ -33,7 +33,7 @@ from referee import FowBoard
 from .belief import HEAD_SHARE, MIN_POOL, Belief
 from .opponent import KING_MISS, OTHER, Policy
 
-SAMPLE_STATES = 256      # states handed to the search: stockfish_search.SCAN_STATES draws
+SAMPLE_STATES = 1024     # states handed to the search: stockfish_search.SCAN_STATES draws
 MAX_STATES = 200_000     # the most the helper keeps; a larger set is cut down, as in Belief
 FALLBACK_STATES = 1500   # the cap of the Python belief that takes over if the helper is lost
 ASK_STATES = 512         # states per opponent move that the policy is asked about, at most

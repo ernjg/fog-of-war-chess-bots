@@ -28,7 +28,7 @@ from .rules import side_to_move_wins
 from .search import choose_action
 
 MAX_ROOTS = 64             # belief states Stockfish scores per move
-SCAN_STATES = 256          # belief states checked for moves that lose the king at once
+SCAN_STATES = 1024         # belief states checked for moves that lose the king at once (0.1 ms each)
 SCAN_SHARE = 0.1           # of the budget, at most, for that check
 MAX_DEPTH = 12
 MIN_SLICE = 0.02           # seconds of search per position, at least

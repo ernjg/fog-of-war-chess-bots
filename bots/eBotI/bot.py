@@ -51,7 +51,11 @@ FALLBACK_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
 class ObscuroAgent(Agent):
     def __init__(self, seed: int | None, max_states: int, move_time: float | None,
                  engine: Path | None = None, engine_count: int = 2, weigh_belief: bool = True,
-                 positions: Path | None = None, search_mode: str = "obscuro"):
+                 positions: Path | None = None, search_mode: str = "stockfish",
+                 leaf_depth: int | None = None, root_depth: int | None = None,
+                 perfect_opponent: bool = False):
+        self.leaf_depth, self.root_depth = leaf_depth, root_depth
+        self.perfect_opponent = perfect_opponent
         self.search_mode = search_mode    # "obscuro": the growing tree; "pcfr": depth-2 tree; "stockfish": v4's search
         self.obscuro: ObscuroSearch | None = None
         self.rng = random.Random(seed)
@@ -84,7 +88,7 @@ class ObscuroAgent(Agent):
         # Where our pieces have stood: at the start and after each move of ours, with the
         # number of times. A position can only repeat if they stand as they did before.
         self.stood: Counter[str] = Counter()
-        self.obscuro = ObscuroSearch(color, self.rng)
+        self.obscuro = ObscuroSearch(color, self.rng, self.leaf_depth, self.root_depth, self.perfect_opponent)
         log(f"obscuro: playing {'white' if color else 'black'} at {base:g}+{inc:g}")
         self.close()
         self.belief = self._new_belief(color)
@@ -376,6 +380,7 @@ class ObscuroAgent(Agent):
             f"(carried={result.carried} kluss={result.kluss}) nodes={result.nodes} "
             f"infosets={result.infosets} expanded={result.expansions} sf_leaves={result.engine_leaves} "
             f"iters={result.iterations} pmax={result.pmax:.2f} mixed={result.mixed} "
+            f"risk={result.risk:.2f} scan={result.scanned} "
             f"|P|={self._belief_size()} budget={budget:.2f}s belief_update={spent:.2f}s"
             + (" repeat_avoided" if result.repeat_avoided else ""))
         return result.move
@@ -491,9 +496,14 @@ def main() -> None:
                         help="Stockfish binary (default: $FOW_STOCKFISH, else the one build.sh "
                              "makes); 'off' plays without it")
     parser.add_argument("--engines", type=int, default=2, help="Stockfish processes to run")
-    parser.add_argument("--search", choices=("obscuro", "pcfr", "stockfish"), default="obscuro",
-                        help="obscuro: the growing tree solved by PCFR+ with Stockfish leaves (default); "
-                             "pcfr: the fixed depth-2 tree; stockfish: v4's per-position search")
+    parser.add_argument("--leaf-depth", type=int, default=None, help="Stockfish depth at tree leaves (default 6)")
+    parser.add_argument("--opponent", choices=("fog", "perfect"), default="fog",
+                        help="fog: the opponent in the tree sees only its own view (default); "
+                             "perfect: it knows the position and our moves, as v4 assumes")
+    parser.add_argument("--root-depth", type=int, default=None, help="Stockfish depth under the roots (default 8)")
+    parser.add_argument("--search", choices=("stockfish", "obscuro", "pcfr"), default="stockfish",
+                        help="stockfish: score our moves with Stockfish on each position (default, as v4); "
+                             "obscuro: the growing tree solved by PCFR+; pcfr: the fixed depth-2 tree")
     parser.add_argument("--equal-odds", action="store_true",
                         help="count every unseen opponent move as equally likely, instead of "
                              "weighting the belief by Stockfish's judgement of the moves")
@@ -505,7 +515,9 @@ def main() -> None:
     engine = None if args.stockfish.strip().lower() in off else Path(args.stockfish).expanduser().resolve()
     positions = None if args.positions.strip().lower() in off else Path(args.positions).expanduser().resolve()
     agent = ObscuroAgent(args.seed, args.max_states, args.move_time, engine, max(1, args.engines),
-                         weigh_belief=not args.equal_odds, positions=positions, search_mode=args.search)
+                         weigh_belief=not args.equal_odds, positions=positions, search_mode=args.search,
+                         leaf_depth=args.leaf_depth, root_depth=args.root_depth,
+                         perfect_opponent=args.opponent == "perfect")
     atexit.register(agent.close)
     run(agent)
 

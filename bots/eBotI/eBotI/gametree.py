@@ -28,7 +28,11 @@ from .rules import side_to_move_wins
 
 OURS, THEIRS = 0, 1
 WIN, LOSS = 1.0, -1.0
-LEAF_DEPTH = 1           # Stockfish MultiPV depth for the children of an expanded node (C.5)
+LEAF_DEPTH = 8           # Stockfish MultiPV depth for the children of an expanded node; the paper
+                         # uses 1 with fifty times our nodes, we buy depth per leaf instead. One
+                         # depth throughout: a parent valued deeper than its children biases the
+                         # tree down (the opponent picks the best of noisier leaves)
+ROOT_DEPTH = 8           # and for the children of a root
 LEAF_SLICE = (0.02, 0.3)
 PUCT_C = 1.0             # C in Q(I, a) (C.4)
 NEVER_EXIT = -2.0        # an alternate value below every payoff: the opponent always enters
@@ -61,6 +65,9 @@ class GameTree:
     def __init__(self, side: chess.Color, rng: random.Random):
         self.side = side
         self.rng = rng
+        self.leaf_depth = LEAF_DEPTH
+        self.root_depth = ROOT_DEPTH
+        self.perfect_opponent = False  # True: the opponent sees everything (every node its own infoset)
         # nodes
         self.parent: list[int] = []
         self.move: list[chess.Move | None] = []
@@ -93,6 +100,7 @@ class GameTree:
         self.iset_visits: list[int] = []
         # the root gadget (B.2, C.1, C.3)
         self.alt: list[float] = []           # alternate value per J, from our side
+        self.J_weight: list[float] = []      # prior weight of J in the uniform part of alpha (1, or more when our king is attacked)
         self.y_blueprint: list[float] = []   # the opponent's blueprint reach of J (0 for fresh roots)
         self.alpha = np.zeros(0)
         self.resolve = _empty_rm()           # 2 slots per J: enter, exit
@@ -118,9 +126,10 @@ class GameTree:
         self.root_obs, self.root_moves = obs, tuple(our_moves)
         self.root_infoset = self.iset_key.get(self.root_key, -1)
 
-    def new_J(self, alt: float, y_blueprint: float = 0.0) -> int:
+    def new_J(self, alt: float, y_blueprint: float = 0.0, weight: float = 1.0) -> int:
         self.alt.append(alt)
         self.y_blueprint.append(y_blueprint)
+        self.J_weight.append(weight)
         self.gadget_ready = False
         return len(self.alt) - 1
 
@@ -167,10 +176,10 @@ class GameTree:
         """Fix the prior alpha(J) and create the gadget's regret minimizers (C.3, Fig. 9)."""
         m = len(self.alt)
         y = np.array(self.y_blueprint, dtype=float)
+        w = np.array(self.J_weight, dtype=float)
+        uniform = w / w.sum() if m and w.sum() > 0 else (np.full(m, 1.0 / m) if m else np.zeros(0))
         total = y.sum()
-        self.alpha = 0.5 * (y / total if total > 0 else np.zeros(m)) + 0.5 / m if m else np.zeros(0)
-        if total <= 0:
-            self.alpha = np.full(m, 1.0 / m) if m else np.zeros(0)
+        self.alpha = 0.5 * (y / total) + 0.5 * uniform if total > 0 else uniform
         enter = np.tile([1.0, 0.0], m)  # start by entering everywhere
         self.resolve = PredictiveRegretMatchingPlus(np.repeat(np.arange(m), 2), m, enter)
         self.maxmargin = PredictiveRegretMatchingPlus(np.zeros(m, dtype=np.int64), 1,
@@ -211,7 +220,8 @@ class GameTree:
             jobs, owners = [], []
             for k, (node, board, _) in enumerate(todo):
                 if engine_accepts(board):
-                    jobs.append(Job(engine_fen(board), LEAF_DEPTH))
+                    depth = self.root_depth if self.depth[node] == 0 else self.leaf_depth
+                    jobs.append(Job(engine_fen(board), depth))
                     owners.append(k)
             if jobs:
                 for k, result in zip(owners, pool.run(jobs, deadline, *LEAF_SLICE), strict=True):
@@ -277,6 +287,8 @@ class GameTree:
         actor = self.actor[node]
         color = self.side if actor == OURS else not self.side
         prev = self.prev[node][actor]
+        if actor == THEIRS and self.perfect_opponent:
+            prev = (prev, node)   # it knows exactly where it is
         key = (actor, prev, observation(board, color), tuple(m.uci() for m in moves))
         found = self.iset_key.get(key)
         if found is None:
@@ -524,6 +536,8 @@ class GameTree:
         history for it) are the KLUSS roots. Every new root J gets the alternate value
         u(x, y | J) - gift(J) (C.2) and its blueprint reach y(J) (C.3)."""
         new = GameTree(self.side, self.rng)
+        new.perfect_opponent = self.perfect_opponent
+        new.leaf_depth, new.root_depth = self.leaf_depth, self.root_depth
         new.set_root_view(obs, our_moves)
         if self._last is None or self.root_infoset < 0:
             return new
