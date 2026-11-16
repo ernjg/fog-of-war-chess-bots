@@ -45,9 +45,11 @@ Step 1 is the same. Steps 2 to 4 are replaced (`stockfish_search.py`, `engine.py
 
 Why this is a fair swap: in the depth-2 game two belief states never look alike to the
 opponent, because it always sees its own pieces. So the PCFR+ search already treats the
-opponent as knowing the position, and Stockfish does the same, only deeper and with a real
-evaluation. What neither search has is the paper's reasoning about what the opponent does
-not know about *our* pieces (KLUSS roots).
+opponent as knowing which position is the real one. The only thing it keeps from the
+opponent is a move of ours that the opponent cannot see. Stockfish shows it that move as
+well and otherwise does the same, only deeper and with a real evaluation. What neither
+search has is the paper's reasoning about what the opponent does not know about where
+*our* pieces stood before that move (KLUSS roots).
 
 Why attacked states count six times: an opponent who can attack our king out of sight
 usually does, more often than P allows for. Replaying 28 games (1,053
@@ -413,9 +415,10 @@ state's count is passed to the engine.)
 
 ## Next
 
-The paper's own steps, one at a time, in the order its ablations suggest. The Stockfish
-search averages over positions searched separately, which is not what Obscuro does; the
-PCFR+ search is the part with Obscuro's shape, and these build on it:
+The paper's own steps, one at a time. The first has the largest effect among the paper's
+ablations, and the others are in the order we plan to build them. The Stockfish search
+averages over positions searched separately, which is not what Obscuro does; the PCFR+
+search is the part with Obscuro's shape, and these build on it:
 
 1. **Stockfish values at the leaves** of the PCFR+ tree in place of the material heuristic
    (the largest effect among the paper's ablations: the full program scored 81.9%
