@@ -31,6 +31,8 @@ class PredictiveRegretMatchingPlus:
 def best_action_strategy(value: np.ndarray, infoset_start: np.ndarray) -> np.ndarray:
     """All mass on the highest-``value`` slot of each infoset."""
     strategy = np.zeros(len(value))
+    if len(infoset_start) == 0:
+        return strategy  # no infoset at all: every line of the game is already decided
     ends = np.append(infoset_start[1:], len(value))
     for start, end in zip(infoset_start, ends, strict=True):
         strategy[start + np.argmax(value[start:end])] = 1.0

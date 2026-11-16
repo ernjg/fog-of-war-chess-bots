@@ -1,1 +1,2 @@
-"""A reduced Obscuro: belief set, depth-2 subgame, PCFR+. Design notes in docs/obscuro.md."""
+"""A reduced Obscuro: a belief set, searched with Stockfish or with a depth-2 subgame and
+PCFR+. Design notes in docs/obscuro.md."""

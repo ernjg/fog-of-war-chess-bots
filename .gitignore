@@ -8,3 +8,7 @@ __pycache__/
 .pytest_cache/
 dist/
 .DS_Store
+bots/*/stockfish/
+bots/*/stockfish.new/
+bots/*/.build-tmp/
+bots/*/positions
