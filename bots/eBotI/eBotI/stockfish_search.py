@@ -27,13 +27,19 @@ from .engine import EnginePool, Job, mate_value
 from .rules import side_to_move_wins
 from .search import choose_action
 
-MAX_ROOTS = 64             # belief states Stockfish scores per move
+MAX_ROOTS = 384            # belief states Stockfish scores per move: breadth over depth, the
+                           # losses come from boards never scored, not from shallow scores
 SCAN_STATES = 1024         # belief states checked for moves that lose the king at once (0.1 ms each)
 SCAN_SHARE = 0.1           # of the budget, at most, for that check
 MAX_DEPTH = 18             # with few states the position is nearly known: search it like chess
 MIN_SLICE = 0.02           # seconds of search per position, at least
 MAX_SLICE = 2.0            # and at most: with few states left, bank the rest
 UNIFORM_SHARE = 0.3        # of the king-loss risk, the part estimated on an equal-odds sample
+# Risk-averse aggregation: a move's value over the boards is a blend of its weighted mean
+# and its conditional value at risk, the weighted mean of its worst CVAR_TAIL of the weight.
+# A move that is fine on most boards and bad on a few is then priced for the few.
+CVAR_TAIL = 0.3
+CVAR_WEIGHT = 0.5          # 0: the plain mean (v4); 1: the tail alone
 RESERVE = 0.06             # seconds kept back for stopping the engines and choosing
 MIN_ENGINE_SECONDS = 0.05
 DRAW = 0.0
@@ -390,7 +396,22 @@ def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
     # no value to go by. It gets the lowest value of the moves that do: not preferred to
     # any of them, but not written off as a certain loss either.
     unknown = float(np.min(total[known] / count[known])) if known.any() else LOSS
-    when_safe = np.where(known, total / np.maximum(count, 1e-12), unknown)
+    mean = np.where(known, total / np.maximum(count, 1e-12), unknown)
+    when_safe = mean
+    if CVAR_WEIGHT > 0 and len(evidence.root_values):
+        tail = np.empty(len(mean))
+        for a in range(len(mean)):
+            if not known[a]:
+                tail[a] = unknown
+                continue
+            rows = np.flatnonzero(safe[:, a])
+            values = evidence.root_values[rows, a]
+            weights = root_weight[rows]
+            order = np.argsort(values)
+            cum = np.cumsum(weights[order])
+            keep = order[:max(1, int(np.searchsorted(cum, CVAR_TAIL * cum[-1], side="right")) + 1)]
+            tail[a] = float(weights[keep] @ values[keep] / weights[keep].sum())
+        when_safe = (1.0 - CVAR_WEIGHT) * mean + CVAR_WEIGHT * tail
     return -risk + (1.0 - risk) * when_safe, risk
 
 

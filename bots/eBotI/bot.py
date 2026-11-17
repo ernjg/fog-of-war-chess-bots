@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import math
 import os
 import random
 import sys
@@ -38,6 +39,7 @@ from uniform_random import ObservationTracker, candidates  # noqa: E402  (starte
 MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the fallback move
 TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
 RISK_UNIFORM_SHARE = 0.5  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
+UNCERTAIN_TIME = 1.4      # budget multiplier reached when the set has 10,000 or more positions
 BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
 BELIEF_SHARE = 0.4            # of a move's time, at most, for updating the belief
@@ -326,7 +328,8 @@ class ObscuroAgent(Agent):
         else:
             # The belief update already used `spent` seconds of this turn's clock.
             left = remaining_time - spent
-            budget = move_budget(left, self.increment) - spent
+            budget = move_budget(left, self.increment) * self._uncertainty_factor() - spent
+            budget = min(budget, left / 4)
             if budget < BRIEF_SEARCH_SECONDS and left >= HEALTHY_CLOCK_SECONDS:
                 # A slow belief update has used up this move's slice. With this much on
                 # the clock a short search is still worth far more than the fallback move.
@@ -439,6 +442,13 @@ class ObscuroAgent(Agent):
             f"belief_update={spent:.2f}s" + self._policy_note()
             + (" repeat_avoided" if result.repeat_avoided else ""))
         return result.move
+
+    def _uncertainty_factor(self) -> float:
+        """Time follows uncertainty: up to UNCERTAIN_TIME times the budget when the set is
+        large, the plain budget when the position is nearly known (depth is cheap there
+        and the search banks what it does not need)."""
+        size = max(len(self.belief), 1)
+        return 1.0 + (UNCERTAIN_TIME - 1.0) * min(1.0, math.log10(size) / 4.0)
 
     def _exact_risk(self, moves: list[chess.Move]) -> list[float] | None:
         """Per move, from the helper: the share of the whole set in which it loses the king at
