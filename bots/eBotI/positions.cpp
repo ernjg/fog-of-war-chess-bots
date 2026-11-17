@@ -1047,6 +1047,105 @@ int main(int argc, char** argv) {
                     printf("fen %s\n", to_fen(p, fullmove + (mover == BLACK ? 1 : 0)).c_str());
                 }
             }
+        } else if (command == "risk") {
+            // risk <cap> <attacked_x100> <k> <uci...>: for each of our candidate moves, the
+            // weighted share of the whole set in which it loses the king at once (positions
+            // with our king attacked count attacked_x100/100 times). Over `cap` positions the
+            // heaviest half and a random half of the rest are used. Positions that contradict
+            // the view (a candidate is not legal, or we could already take the king) are skipped.
+            unsigned long long cap = 0, attacked_x100 = 600, k = 0;
+            in >> cap >> attacked_x100 >> k;
+            std::vector<Move> cands;
+            bool bad = false;
+            for (unsigned long long i = 0; i < k; ++i) { std::string u; Move m; in >> u; if (!parse_uci(u, m)) bad = true; else cands.push_back(m); }
+            if (bad || cands.empty()) { printf("err bad risk\n"); fflush(stdout); continue; }
+            std::vector<uint32_t> use;
+            if (cap == 0 || S.states.size() <= cap) { use.resize(S.states.size()); std::iota(use.begin(), use.end(), 0u); }
+            else {
+                std::vector<uint32_t> order(S.states.size());
+                std::iota(order.begin(), order.end(), 0u);
+                std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return S.weights[a] > S.weights[b]; });
+                size_t head = cap / 2;
+                use.assign(order.begin(), order.begin() + head);
+                std::vector<uint32_t> tail(order.begin() + head, order.end());
+                for (size_t i = tail.size(); i > 1; --i) std::swap(tail[i - 1], tail[S.rng.below(i)]);
+                use.insert(use.end(), tail.begin(), tail.begin() + (std::ptrdiff_t)std::min<size_t>(tail.size(), (size_t)(cap - head)));
+            }
+            std::vector<double> lose(cands.size(), 0.0), lose_any(cands.size(), 0.0);
+            double total = 0; size_t used = 0;
+            Move moves[MAX_MOVES];
+            for (uint32_t idx : use) {
+                const Pos& p = S.states[idx];
+                if (p.turn != S.side || wins(p)) continue;
+                int n = gen_moves(p, moves);
+                bool all = true;
+                for (Move m : cands) if (std::find(moves, moves + n, m) == moves + n) { all = false; break; }
+                if (!all) continue;
+                U64 king = p.bb[KING] & p.occ[S.side];
+                double w = (king && attacked_by(p, S.side ^ 1, msb(king))) ? attacked_x100 / 100.0 : 1.0;
+                w *= std::max(S.weights[idx], 0.0);
+                if (w <= 0) continue;
+                total += w; ++used;
+                for (size_t c = 0; c < cands.size(); ++c) {
+                    Pos child = p;
+                    make(child, cands[c]);
+                    if (wins(child)) { lose[c] += w; lose_any[c] += 1; }
+                }
+            }
+            printf("risk %zu used=%zu total=%.17g\n", cands.size(), used, total);
+            for (size_t c = 0; c < cands.size(); ++c)
+                printf("r %s %.9g %.0f\n", to_uci(cands[c]).c_str(), total > 0 ? lose[c] / total : 0.0, lose_any[c]);
+        } else if (command == "trap") {
+            // trap <cap> <attacked_x100> <k> <uci...>: for each candidate move, the weighted
+            // share of positions (a random `cap` of them) in which the opponent then has a
+            // reply that attacks our king and leaves us no move that saves it.
+            unsigned long long cap = 2000, attacked_x100 = 600, k = 0;
+            in >> cap >> attacked_x100 >> k;
+            std::vector<Move> cands;
+            bool bad = false;
+            for (unsigned long long i = 0; i < k; ++i) { std::string u; Move m; in >> u; if (!parse_uci(u, m)) bad = true; else cands.push_back(m); }
+            if (bad || cands.empty()) { printf("err bad trap\n"); fflush(stdout); continue; }
+            std::vector<uint32_t> order(S.states.size());
+            std::iota(order.begin(), order.end(), 0u);
+            for (size_t i = order.size(); i > 1; --i) std::swap(order[i - 1], order[S.rng.below(i)]);
+            if (cap && order.size() > cap) order.resize((size_t)cap);
+            std::vector<double> trapped(cands.size(), 0.0);
+            double total = 0; size_t used = 0;
+            Move moves[MAX_MOVES], replies[MAX_MOVES], escapes[MAX_MOVES];
+            for (uint32_t idx : order) {
+                const Pos& p = S.states[idx];
+                if (p.turn != S.side || wins(p)) continue;
+                int n = gen_moves(p, moves);
+                bool all = true;
+                for (Move m : cands) if (std::find(moves, moves + n, m) == moves + n) { all = false; break; }
+                if (!all) continue;
+                U64 king = p.bb[KING] & p.occ[S.side];
+                double w = (king && attacked_by(p, S.side ^ 1, msb(king))) ? attacked_x100 / 100.0 : 1.0;
+                w *= std::max(S.weights[idx], 0.0);
+                if (w <= 0) continue;
+                total += w; ++used;
+                for (size_t c = 0; c < cands.size(); ++c) {
+                    Pos after = p;
+                    make(after, cands[c]);
+                    if (wins(after)) { trapped[c] += w; continue; }   // loses the king at once
+                    int nr = gen_moves(after, replies);
+                    bool trap = false;
+                    for (int r = 0; r < nr && !trap; ++r) {
+                        Pos reply = after;
+                        make(reply, replies[r]);
+                        U64 k2 = reply.bb[KING] & reply.occ[S.side];
+                        if (!k2 || !attacked_by(reply, S.side ^ 1, msb(k2))) continue;  // not a check
+                        if (wins(reply)) continue;   // we could take their king instead: no trap
+                        int ne = gen_moves(reply, escapes);
+                        bool escape = false;
+                        for (int e = 0; e < ne && !escape; ++e) { Pos out = reply; make(out, escapes[e]); if (!wins(out)) escape = true; }
+                        if (!escape) trap = true;
+                    }
+                    if (trap) trapped[c] += w;
+                }
+            }
+            printf("trap %zu used=%zu total=%.17g\n", cands.size(), used, total);
+            for (size_t c = 0; c < cands.size(); ++c) printf("t %s %.9g\n", to_uci(cands[c]).c_str(), total > 0 ? trapped[c] / total : 0.0);
         } else if (command == "tree") {
             tree_command(in);
         } else {

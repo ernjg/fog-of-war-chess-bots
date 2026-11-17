@@ -79,7 +79,7 @@ class Helper:
                 raise HelperRefused(f"the helper answered {header[:80]!r}")
             if not words:
                 raise HelperError("the helper answered an empty line")
-            more = int(words[2]) if words[0] == "parents" else int(words[1]) if words[0] in ("sample", "dump", "usample", "leaves", "result") else 0
+            more = int(words[2]) if words[0] == "parents" else int(words[1]) if words[0] in ("sample", "dump", "usample", "leaves", "result", "risk", "trap") else 0
             return header, [self._line(deadline) for _ in range(more)]
         except HelperError:
             self.kill()  # after one bad answer nothing it says can be matched to a question

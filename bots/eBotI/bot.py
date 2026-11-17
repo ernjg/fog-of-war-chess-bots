@@ -31,11 +31,12 @@ from eBotI.tree_search import TreeSearch  # noqa: E402
 from eBotI.opponent import POLICY_SECONDS, OpponentPolicy  # noqa: E402
 from eBotI.position_set import MAX_STATES as FULL_SET_STATES, PositionSet  # noqa: E402
 from eBotI.search import move_budget, own_placement, search  # noqa: E402
-from eBotI.stockfish_search import stockfish_search  # noqa: E402
+from eBotI.stockfish_search import ATTACKED_WEIGHT, stockfish_search  # noqa: E402
 from fow.protocol import Agent, log, run  # noqa: E402
 from uniform_random import ObservationTracker, candidates  # noqa: E402  (starter kit)
 
 MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the fallback move
+TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
 BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
 BELIEF_SHARE = 0.4            # of a move's time, at most, for updating the belief
@@ -414,9 +415,10 @@ class ObscuroAgent(Agent):
                 return None
             budget = deadline - time.monotonic()
             weights = self.belief.weights if self.belief.weighted else None
+            exact_risk = self._exact_risk(moves)
             result = stockfish_search(pool, self.belief.states, moves, self.side, budget,
                                       self.rng, repeat_counts, weights,
-                                      getattr(self.belief, "uniform_states", None))
+                                      getattr(self.belief, "uniform_states", None), exact_risk)
         except Exception:
             log("obscuro: stockfish search failed")
             traceback.print_exc(file=sys.stderr)
@@ -436,6 +438,27 @@ class ObscuroAgent(Agent):
             f"belief_update={spent:.2f}s" + self._policy_note()
             + (" repeat_avoided" if result.repeat_avoided else ""))
         return result.move
+
+    def _exact_risk(self, moves: list[chess.Move]) -> list[float] | None:
+        """Per move, from the helper: the share of the whole set in which it loses the king at
+        once, plus the share in which the opponent can then give a check we cannot answer.
+        None when the set is kept in Python (the search then samples)."""
+        helper = getattr(self.belief, "helper", None)
+        if helper is None or getattr(self.belief, "failure", "") or helper.dead or not moves:
+            return None
+        ucis = " ".join(m.uci() for m in moves)
+        try:
+            _, rows = helper.ask(f"risk 0 {int(ATTACKED_WEIGHT * 100)} {len(moves)} {ucis}", time.monotonic() + 2.0)
+            risk = {row.split()[1]: float(row.split()[2]) for row in rows}
+            _, rows = helper.ask(f"trap {TRAP_POSITIONS} {int(ATTACKED_WEIGHT * 100)} {len(moves)} {ucis}", time.monotonic() + 2.0)
+            trap = {row.split()[1]: float(row.split()[2]) for row in rows}
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            return None
+        if len(risk) != len(moves) or len(trap) != len(moves):
+            return None
+        # losing the king now, or after a check we cannot meet: the second only where the first did not already
+        return [risk[m.uci()] + (1.0 - risk[m.uci()]) * trap[m.uci()] for m in moves]
 
     def _policy_note(self) -> str:
         """For the log: of the positions the opponent policy was asked about since our

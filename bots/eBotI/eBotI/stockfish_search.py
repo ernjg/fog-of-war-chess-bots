@@ -356,7 +356,8 @@ def _apply_fog_rules(root: _Root, our_moves: Sequence[chess.Move], values: np.nd
 
 
 def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
-          uniform_risk: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+          uniform_risk: np.ndarray | None = None,
+          exact_risk: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(value, risk) of each move from the evidence.
 
     Every state counts as often as it was drawn (once each, unless the belief has
@@ -374,7 +375,10 @@ def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
     if evidence.root_count is not None:
         root_weight = root_weight * evidence.root_count
     risk = scan_weight @ evidence.scan_suicide / scan_weight.sum()
-    if uniform_risk is not None:
+    if exact_risk is not None:
+        # the helper counted every position in the set: nothing sampled, nothing missed
+        risk = exact_risk
+    elif uniform_risk is not None:
         # the weighted sample can leave out the true position; an equal-odds sample cannot
         # be fooled by the weights, so part of the risk is read off it
         risk = (1.0 - UNIFORM_SHARE) * risk + UNIFORM_SHARE * uniform_risk
@@ -410,7 +414,8 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
                      our_moves: Sequence[chess.Move], side: chess.Color, budget: float,
                      rng: random.Random, repeat_counts: Sequence[int] | None = None,
                      weights: Sequence[float] | None = None,
-                     uniform_states: Sequence[FowBoard] | None = None) -> StockfishResult | None:
+                     uniform_states: Sequence[FowBoard] | None = None,
+                     exact_risk: Sequence[float] | None = None) -> StockfishResult | None:
     """The move with the best value over sampled ``states``; see ``weigh`` for the value.
 
     ``weights`` is given when the belief has them (one per state) and None when its
@@ -424,7 +429,8 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
     if evidence is None:
         return None
     uniform_risk = suicide_share(uniform_states, our_moves) if uniform_states else None
-    value, risk = weigh(evidence, uniform_risk=uniform_risk)
+    value, risk = weigh(evidence, uniform_risk=uniform_risk,
+                        exact_risk=None if exact_risk is None else np.asarray(exact_risk, dtype=float))
 
     # Choose: exact ties at random, and not the same shuffle again when winning.
     ranked = value + 1e-9 * np.array([rng.random() for _ in our_moves])
