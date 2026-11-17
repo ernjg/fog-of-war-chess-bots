@@ -44,6 +44,10 @@ EXPAND_SECONDS = 1.5     # for one update of the set, unless ``allowance`` says 
 MAX_BUFFER = 64 * 1024 * 1024
 
 
+class HelperRefused(RuntimeError):
+    """The helper answered "err ...": the question was bad, the helper is fine."""
+
+
 class HelperError(RuntimeError):
     """The helper did not answer, or not in a way that can be used."""
 
@@ -71,8 +75,10 @@ class Helper:
             self._send(text.encode("ascii") + b"\n", deadline)
             header = self._line(deadline)
             words = header.split()
-            if not words or words[0] == "err":
-                raise HelperError(f"the helper answered {header[:80]!r}")
+            if words and words[0] == "err":
+                raise HelperRefused(f"the helper answered {header[:80]!r}")
+            if not words:
+                raise HelperError("the helper answered an empty line")
             more = int(words[2]) if words[0] == "parents" else int(words[1]) if words[0] in ("sample", "dump", "usample", "leaves", "result") else 0
             return header, [self._line(deadline) for _ in range(more)]
         except HelperError:

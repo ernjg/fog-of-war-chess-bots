@@ -14,7 +14,7 @@ import fow  # noqa: F401  (puts the starter kit on sys.path)
 from referee import FowBoard
 
 from .engine import EnginePool, Job
-from .position_set import Helper, HelperError
+from .position_set import Helper, HelperError, HelperRefused
 from .search import choose_action
 from .stockfish_search import ATTACKED_WEIGHT, engine_accepts, engine_fen, suicide_share
 
@@ -109,9 +109,10 @@ class TreeSearch:
                 break
             expansions += e
             engine_leaves += l
-        info = self._ask(helper, "tree gadget")
-        first = self._ask(helper, "tree solve 1 0")
-        if first.startswith("err"):
+        self._ask(helper, "tree gadget")
+        try:
+            self._ask(helper, "tree solve 1 0")
+        except HelperRefused:   # no root fits our view: nothing to search
             return None
 
         # 2. grow and solve in turns until the growth share ends, then solve only
@@ -185,8 +186,6 @@ class TreeSearch:
 
     def _ask(self, helper: Helper, text: str) -> str:
         header, _ = helper.ask(text, time.monotonic() + ANSWER_SECONDS)
-        if header.startswith("err"):
-            raise HelperError(f"the helper answered {header!r} to {text[:40]!r}")
         return header
 
     def _grow(self, helper: Helper, pool: EnginePool | None, in_helper: bool, exploring: int,

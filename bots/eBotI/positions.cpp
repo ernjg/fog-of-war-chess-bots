@@ -800,6 +800,26 @@ static void tree_command(std::istringstream& in) {
             ++expanded;
         }
         printf("ok expanded=%d engine_leaves=%d nodes=%zu infosets=%zu root_infoset=%d\n", expanded, engine_leaves, T->nodes.size(), T->isets.size(), T->root_infoset);
+    } else if (what == "expand") {
+        // tree expand <k> <node...> <depth> <ms>: value and add the children of these nodes
+        unsigned long long k = 0;
+        in >> k;
+        std::vector<int32_t> nodes;
+        for (unsigned long long i = 0; i < k; ++i) { long n = -1; in >> n; if (n >= 0 && (size_t)n < T->nodes.size()) nodes.push_back((int32_t)n); }
+        int depth = 1; double ms = 1000;
+        in >> depth >> ms;
+        std::vector<std::string> fens;
+        for (int32_t n : nodes) fens.push_back(to_fen(T->nodes[n].pos, T->fullmove));
+        std::vector<engines::Result> results;
+        if (engines::ready_count() > 0 && !fens.empty())
+            engines::evaluate(fens, depth, Clock::now() + std::chrono::milliseconds((long)ms), results);
+        int expanded = 0, engine_leaves = 0;
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            std::unordered_map<std::string, double> none;
+            engine_leaves += expand(*T, nodes[i], (i < results.size() && results[i].ok) ? results[i].scores : none);
+            ++expanded;
+        }
+        printf("ok expanded=%d engine_leaves=%d nodes=%zu infosets=%zu root_infoset=%d\n", expanded, engine_leaves, T->nodes.size(), T->isets.size(), T->root_infoset);
     } else if (what == "gadget") {
         finish_gadget(*T);
         printf("ok J=%zu\n", T->alt.size());
