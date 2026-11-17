@@ -1054,11 +1054,14 @@ int main(int argc, char** argv) {
             // heaviest half and a random half of the rest are used. Positions that contradict
             // the view (a candidate is not legal, or we could already take the king) are skipped.
             unsigned long long cap = 0, attacked_x100 = 600, k = 0;
-            in >> cap >> attacked_x100 >> k;
+            double uniform_share = 0.0;   // 0: by the set's weights; 1: every position alike; between: a blend
+            in >> cap >> attacked_x100 >> uniform_share >> k;
             std::vector<Move> cands;
             bool bad = false;
             for (unsigned long long i = 0; i < k; ++i) { std::string u; Move m; in >> u; if (!parse_uci(u, m)) bad = true; else cands.push_back(m); }
             if (bad || cands.empty()) { printf("err bad risk\n"); fflush(stdout); continue; }
+            double wsum = 0; for (double w : S.weights) wsum += std::max(w, 0.0);
+            double mean_w = S.weights.empty() ? 1.0 : wsum / (double)S.weights.size();
             std::vector<uint32_t> use;
             if (cap == 0 || S.states.size() <= cap) { use.resize(S.states.size()); std::iota(use.begin(), use.end(), 0u); }
             else {
@@ -1083,7 +1086,7 @@ int main(int argc, char** argv) {
                 if (!all) continue;
                 U64 king = p.bb[KING] & p.occ[S.side];
                 double w = (king && attacked_by(p, S.side ^ 1, msb(king))) ? attacked_x100 / 100.0 : 1.0;
-                w *= std::max(S.weights[idx], 0.0);
+                w *= (1.0 - uniform_share) * std::max(S.weights[idx], 0.0) + uniform_share * mean_w;
                 if (w <= 0) continue;
                 total += w; ++used;
                 for (size_t c = 0; c < cands.size(); ++c) {
@@ -1100,11 +1103,14 @@ int main(int argc, char** argv) {
             // share of positions (a random `cap` of them) in which the opponent then has a
             // reply that attacks our king and leaves us no move that saves it.
             unsigned long long cap = 2000, attacked_x100 = 600, k = 0;
-            in >> cap >> attacked_x100 >> k;
+            double uniform_share = 0.0;
+            in >> cap >> attacked_x100 >> uniform_share >> k;
             std::vector<Move> cands;
             bool bad = false;
             for (unsigned long long i = 0; i < k; ++i) { std::string u; Move m; in >> u; if (!parse_uci(u, m)) bad = true; else cands.push_back(m); }
             if (bad || cands.empty()) { printf("err bad trap\n"); fflush(stdout); continue; }
+            double wsum = 0; for (double w : S.weights) wsum += std::max(w, 0.0);
+            double mean_w = S.weights.empty() ? 1.0 : wsum / (double)S.weights.size();
             std::vector<uint32_t> order(S.states.size());
             std::iota(order.begin(), order.end(), 0u);
             for (size_t i = order.size(); i > 1; --i) std::swap(order[i - 1], order[S.rng.below(i)]);
@@ -1121,7 +1127,7 @@ int main(int argc, char** argv) {
                 if (!all) continue;
                 U64 king = p.bb[KING] & p.occ[S.side];
                 double w = (king && attacked_by(p, S.side ^ 1, msb(king))) ? attacked_x100 / 100.0 : 1.0;
-                w *= std::max(S.weights[idx], 0.0);
+                w *= (1.0 - uniform_share) * std::max(S.weights[idx], 0.0) + uniform_share * mean_w;
                 if (w <= 0) continue;
                 total += w; ++used;
                 for (size_t c = 0; c < cands.size(); ++c) {

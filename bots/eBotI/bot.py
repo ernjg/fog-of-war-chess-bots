@@ -37,6 +37,7 @@ from uniform_random import ObservationTracker, candidates  # noqa: E402  (starte
 
 MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the fallback move
 TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
+RISK_UNIFORM_SHARE = 0.5  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
 BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
 BELIEF_SHARE = 0.4            # of a move's time, at most, for updating the belief
@@ -448,9 +449,9 @@ class ObscuroAgent(Agent):
             return None
         ucis = " ".join(m.uci() for m in moves)
         try:
-            _, rows = helper.ask(f"risk 0 {int(ATTACKED_WEIGHT * 100)} {len(moves)} {ucis}", time.monotonic() + 2.0)
+            _, rows = helper.ask(f"risk 0 {int(ATTACKED_WEIGHT * 100)} {RISK_UNIFORM_SHARE} {len(moves)} {ucis}", time.monotonic() + 2.0)
             risk = {row.split()[1]: float(row.split()[2]) for row in rows}
-            _, rows = helper.ask(f"trap {TRAP_POSITIONS} {int(ATTACKED_WEIGHT * 100)} {len(moves)} {ucis}", time.monotonic() + 2.0)
+            _, rows = helper.ask(f"trap {TRAP_POSITIONS} {int(ATTACKED_WEIGHT * 100)} {RISK_UNIFORM_SHARE} {len(moves)} {ucis}", time.monotonic() + 2.0)
             trap = {row.split()[1]: float(row.split()[2]) for row in rows}
         except Exception:
             traceback.print_exc(file=sys.stderr)
