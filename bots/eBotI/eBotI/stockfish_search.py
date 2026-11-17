@@ -12,6 +12,7 @@ plies further and uses a real evaluation.
 """
 from __future__ import annotations
 
+import os
 import random
 import time
 from collections.abc import Sequence
@@ -27,7 +28,7 @@ from .engine import EnginePool, Job, mate_value
 from .rules import side_to_move_wins
 from .search import choose_action
 
-MAX_ROOTS = 384            # belief states Stockfish scores per move: breadth over depth, the
+MAX_ROOTS = int(os.environ.get("FOW_ROOTS", "64"))  # belief states Stockfish scores per move: breadth over depth, the
                            # losses come from boards never scored, not from shallow scores
 SCAN_STATES = 1024         # belief states checked for moves that lose the king at once (0.1 ms each)
 SCAN_SHARE = 0.1           # of the budget, at most, for that check
@@ -39,7 +40,7 @@ UNIFORM_SHARE = 0.3        # of the king-loss risk, the part estimated on an equ
 # and its conditional value at risk, the weighted mean of its worst CVAR_TAIL of the weight.
 # A move that is fine on most boards and bad on a few is then priced for the few.
 CVAR_TAIL = 0.3
-CVAR_WEIGHT = 0.5          # 0: the plain mean (v4); 1: the tail alone
+CVAR_WEIGHT = float(os.environ.get("FOW_CVAR", "0"))  # 0: the plain mean (v4); 1: the tail alone
 RESERVE = 0.06             # seconds kept back for stopping the engines and choosing
 MIN_ENGINE_SECONDS = 0.05
 DRAW = 0.0
@@ -363,7 +364,8 @@ def _apply_fog_rules(root: _Root, our_moves: Sequence[chess.Move], values: np.nd
 
 def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
           uniform_risk: np.ndarray | None = None,
-          exact_risk: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+          exact_risk: np.ndarray | None = None,
+          hazard: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(value, risk) of each move from the evidence.
 
     Every state counts as often as it was drawn (once each, unless the belief has
@@ -388,6 +390,10 @@ def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
         # the weighted sample can leave out the true position; an equal-odds sample cannot
         # be fooled by the weights, so part of the risk is read off it
         risk = (1.0 - UNIFORM_SHARE) * risk + UNIFORM_SHARE * uniform_risk
+    if hazard is not None:
+        # the belief's risk misses attackers it rates unlikely; the hazard is what the arena
+        # showed actually happens from squares this exposed. Losing to either loses.
+        risk = 1.0 - (1.0 - risk) * (1.0 - hazard)
     safe = ~evidence.root_suicide
     count = root_weight @ safe
     total = root_weight @ np.where(safe, evidence.root_values, 0.0)
@@ -436,8 +442,12 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
                      rng: random.Random, repeat_counts: Sequence[int] | None = None,
                      weights: Sequence[float] | None = None,
                      uniform_states: Sequence[FowBoard] | None = None,
-                     exact_risk: Sequence[float] | None = None) -> StockfishResult | None:
+                     exact_risk: Sequence[float] | None = None,
+                     hazard: Sequence[float] | None = None) -> StockfishResult | None:
     """The move with the best value over sampled ``states``; see ``weigh`` for the value.
+
+    ``hazard`` is the empirical chance, per move, that an unseen piece attacks our king
+    afterwards (see ``hazard.py``); it compounds with the risk the belief gives.
 
     ``weights`` is given when the belief has them (one per state) and None when its
     states all count alike.
@@ -451,7 +461,8 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
         return None
     uniform_risk = suicide_share(uniform_states, our_moves) if uniform_states else None
     value, risk = weigh(evidence, uniform_risk=uniform_risk,
-                        exact_risk=None if exact_risk is None else np.asarray(exact_risk, dtype=float))
+                        exact_risk=None if exact_risk is None else np.asarray(exact_risk, dtype=float),
+                        hazard=None if hazard is None else np.asarray(hazard, dtype=float))
 
     # Choose: exact ties at random, and not the same shuffle again when winning.
     ranked = value + 1e-9 * np.array([rng.random() for _ in our_moves])

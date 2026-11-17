@@ -79,9 +79,9 @@ CASES = {
                                   ["stockfish ready: 2 of 2 engines", "obscuro: sf "]),
     # The experimental bot: the growing tree (Obscuro's search), and its PCFR+ fallback.
     "eBotI with an engine": ("eBotI", [*OBSCURO, "0.4", "--positions", "off"], "",
-                             ["stockfish ready: 4 of 4 engines", "obscuro: sf "]),
+                             ["stockfish ready: 2 of 2 engines", "obscuro: sf "]),
     "eBotI tree search": ("eBotI", [*OBSCURO, "0.4", "--positions", "off", "--search", "obscuro"], "",
-                          ["stockfish ready: 4 of 4 engines", "obscuro: gt "]),
+                          ["stockfish ready: 2 of 2 engines", "obscuro: gt "]),
     "eBotI tree search in C++": ("eBotI", [*OBSCURO, "0.4", "--positions", "HELPER_EBOTI", "--search", "obscuro"], "",
                                  ["position-set helper ready", "obscuro: gt++ "]),
     "eBotI, no engine": ("eBotI", [*OBSCURO, "0.1", "--stockfish", "off", "--positions", "off"], None,

@@ -27,6 +27,7 @@ import chess  # noqa: E402
 
 from eBotI.belief import Belief  # noqa: E402
 from eBotI.engine import EnginePool  # noqa: E402
+from eBotI.hazard import move_hazards, opponent_material  # noqa: E402
 from eBotI.obscuro_search import ObscuroSearch  # noqa: E402
 from eBotI.tree_search import TreeSearch  # noqa: E402
 from eBotI.opponent import POLICY_SECONDS, OpponentPolicy  # noqa: E402
@@ -38,8 +39,9 @@ from uniform_random import ObservationTracker, candidates  # noqa: E402  (starte
 
 MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the fallback move
 TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
-RISK_UNIFORM_SHARE = 0.5  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
-UNCERTAIN_TIME = 1.4      # budget multiplier reached when the set has 10,000 or more positions
+RISK_UNIFORM_SHARE = float(os.environ.get("FOW_RISK_UNIFORM", "0"))  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
+UNCERTAIN_TIME = float(os.environ.get("FOW_TIME", "1.0"))  # budget multiplier reached when the set has 10,000 or more positions
+HAZARD_SCALE = float(os.environ.get("FOW_HAZARD", "1.0"))  # 0 turns the empirical king hazard off
 BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
 BELIEF_SHARE = 0.4            # of a move's time, at most, for updating the belief
@@ -420,9 +422,11 @@ class ObscuroAgent(Agent):
             budget = deadline - time.monotonic()
             weights = self.belief.weights if self.belief.weighted else None
             exact_risk = self._exact_risk(moves)
+            hazard = self._hazard(moves, weights)
             result = stockfish_search(pool, self.belief.states, moves, self.side, budget,
                                       self.rng, repeat_counts, weights,
-                                      getattr(self.belief, "uniform_states", None), exact_risk)
+                                      getattr(self.belief, "uniform_states", None), exact_risk,
+                                      hazard)
         except Exception:
             log("obscuro: stockfish search failed")
             traceback.print_exc(file=sys.stderr)
@@ -449,6 +453,18 @@ class ObscuroAgent(Agent):
         and the search banks what it does not need)."""
         size = max(len(self.belief), 1)
         return 1.0 + (UNCERTAIN_TIME - 1.0) * min(1.0, math.log10(size) / 4.0)
+
+    def _hazard(self, moves: list[chess.Move], weights) -> list[float] | None:
+        """Per move, the empirical chance that an unseen piece attacks our king after it."""
+        if HAZARD_SCALE <= 0:
+            return None
+        try:
+            material = opponent_material(self.belief.states, self.side, weights)
+            return [min(1.0, HAZARD_SCALE * h)
+                    for h in move_hazards(self.tracker.current, self.side, moves, material)]
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            return None
 
     def _exact_risk(self, moves: list[chess.Move]) -> list[float] | None:
         """Per move, from the helper: the share of the whole set in which it loses the king at
@@ -546,7 +562,7 @@ def main() -> None:
     parser.add_argument("--stockfish", default=os.environ.get("FOW_STOCKFISH", str(DEFAULT_ENGINE)),
                         help="Stockfish binary (default: $FOW_STOCKFISH, else the one build.sh "
                              "makes); 'off' plays without it")
-    parser.add_argument("--engines", type=int, default=int(os.environ.get("FOW_ENGINES", "4")),
+    parser.add_argument("--engines", type=int, default=int(os.environ.get("FOW_ENGINES", "2")),
                         help="Stockfish processes to run (default $FOW_ENGINES, else 4: the arena has four threads)")
     parser.add_argument("--leaf-depth", type=int, default=None, help="Stockfish depth at tree leaves (default 6)")
     parser.add_argument("--check-boost", type=float, default=1.0,
