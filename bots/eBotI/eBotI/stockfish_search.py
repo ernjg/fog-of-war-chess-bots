@@ -55,6 +55,12 @@ FOG_TAX_MOVES = 8          # moves taxed: the best this many by value
 FOG_TAX_STATES = 32        # heaviest scored states used
 PAWN_VALUE = 100.0 / 600.0 # one pawn on the tanh(cp / 600) scale
 PIECE_PAWNS = {chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.0, chess.ROOK: 5.0, chess.QUEEN: 9.0}
+SAFE_FIRST = os.environ.get("FOW_SAFE_FIRST", "0") == "1"  # Greek Gift's rule, read off 8,157 of its decisions
+# replayed through our own position set: when a move exists that loses the king in no consistent
+# position, it plays one of those 97% of the time (we: 93%; on king moves 98% vs 91%). 17 of our 54
+# arena losses had such a move available at the fatal decision; 1 of its 11 did.
+SAFE_EPS = 1e-9
+SAFE_PENALTY = 2.0         # taken off every move with positive risk when a zero-risk move exists
 RISK_LAMBDA = float(os.environ.get("FOW_RISK_LAMBDA", "1.0"))  # price of losing the king, in units of a lost
 # position. At the 40 fatal king walks of our arena losses the belief gave the move a median 12% risk
 # and the safest alternative 0.1%; the value gap it took the risk for was a Stockfish gap, measured as
@@ -566,6 +572,11 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
         if check_share < KING_PENALTY_CHECK_SHARE and own >= KING_PENALTY_MIN_PIECES:
             king = "K" if side else "k"
             value = value - KING_PENALTY * np.array([view[m.from_square] == king for m in our_moves], dtype=float)
+
+    if SAFE_FIRST:
+        safe_moves = risk <= SAFE_EPS
+        if safe_moves.any() and not safe_moves.all():
+            value = np.where(safe_moves, value, value - SAFE_PENALTY)
 
     if FOG_TAX > 0:
         root_w = np.where(evidence.root_attacked, ATTACKED_WEIGHT, 1.0) * (evidence.root_count if evidence.root_count is not None else 1.0)
