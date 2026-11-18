@@ -42,6 +42,27 @@ TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable chec
 RISK_UNIFORM_SHARE = float(os.environ.get("FOW_RISK_UNIFORM", "0"))  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
 UNCERTAIN_TIME = float(os.environ.get("FOW_TIME", "1.0"))  # budget multiplier reached when the set has 10,000 or more positions
 EXACT_RISK = os.environ.get("FOW_EXACT_RISK", "0") == "1"  # king risk counted over the whole set by the helper (v4 samples)
+BOOK = os.environ.get("FOW_BOOK", "")  # "gg": Greek Gift's opening moves from its arena replays, keyed by the view
+BOOK_PLIES = 20
+_BOOK: dict[str, list] | None = None
+
+
+def book_move(side: chess.Color, view: str, moves: list[chess.Move]) -> chess.Move | None:
+    """The book's move for this view, if it has one it played at least twice and it is legal."""
+    global _BOOK
+    if BOOK != "gg":
+        return None
+    if _BOOK is None:
+        import json
+        with open(Path(__file__).resolve().parent / "eBotI" / "book_gg.json") as f:
+            _BOOK = json.load(f)
+    entry = _BOOK.get(("w" if side else "b") + view)
+    if not entry:
+        return None
+    move = chess.Move.from_uci(entry[0])
+    return move if move in moves else None
+
+
 HAZARD_SCALE = float(os.environ.get("FOW_HAZARD", "0"))  # the empirical king hazard; 0 (default) is off
 BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
@@ -249,8 +270,12 @@ class ObscuroAgent(Agent):
             moves = self._supported(moves)
         except Exception:
             traceback.print_exc(file=sys.stderr)
+        booked = book_move(self.side, self.tracker.current, moves) if self.plies <= BOOK_PLIES else None
         if len(moves) == 1:
             move = moves[0]
+        elif booked is not None:
+            move = booked
+            log(f"obscuro: book {move.uci()}")
         else:
             try:
                 move = self._search(moves, remaining_time, spent)

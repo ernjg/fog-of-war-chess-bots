@@ -139,6 +139,7 @@ def refine(pool: EnginePool, states: Sequence[FowBoard], weights: Sequence[float
 
     # 3. Group by view; one move per group; weighted mean per candidate.
     refined = values.astype(float).copy()
+    penalty = np.zeros(len(values))
     done = 0
     for c in cands:
         groups: dict[str, list[tuple[float, dict[str, float] | None]]] = defaultdict(list)
@@ -159,7 +160,10 @@ def refine(pool: EnginePool, states: Sequence[FowBoard], weights: Sequence[float
         if total <= 0:
             continue
         value = 0.0
+        perfect = 0.0   # the same leaves with our next move chosen per (state, reply): the engine's assumption
         for members in groups.values():
+            for w, t in members:
+                perfect += w * (max(t.values()) if t else LOSS)
             if all(t is None for _, t in members):
                 value += sum(w for w, _ in members) * LOSS
                 continue
@@ -174,10 +178,13 @@ def refine(pool: EnginePool, states: Sequence[FowBoard], weights: Sequence[float
                 s = sum(w * (t.get(m, LOSS) if t is not None else LOSS) for w, t in members)
                 best = max(best, s / sum(w for w, _ in members))
             value += best * sum(w for w, _ in members)
-        refined[c] = (1.0 - MIX) * values[c] + MIX * value / total
+        # The gap between the two is Jensen's gap measured on one sample of leaves, so the
+        # leaf noise cancels; it is added to the deeper one-ply value instead of replacing it.
+        penalty[c] = (value - perfect) / total
+        refined[c] = values[c] + MIX * penalty[c]
         done += 1
     if log is not None:
         log(f"infoset: {done}/{len(cands)} candidates, {len(boards)} states, {len(reply_jobs)} reply jobs, "
             f"{len(leaf_jobs)} leaves scored {len(leaf_values)}, "
-            + " ".join(f"{our_moves[c].uci()}:{values[c]:+.3f}->{refined[c]:+.3f}" for c in cands))
+            + " ".join(f"{our_moves[c].uci()}:{values[c]:+.3f}{penalty[c]:+.3f}" for c in cands))
     return refined

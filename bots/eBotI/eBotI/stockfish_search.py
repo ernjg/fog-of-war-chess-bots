@@ -24,7 +24,7 @@ import chess
 import numpy as np
 
 import fow  # noqa: F401  (puts the starter kit on sys.path)
-from referee import FowBoard
+from referee import FowBoard, observation
 from fow.protocol import log
 
 from .engine import EnginePool, Job, mate_value
@@ -46,6 +46,15 @@ CVAR_TAIL = 0.3
 # StrangeFish2's rule (won the 2022 RBC competition): part of a move's value is its worst
 # scored board, every board counting alike. Offline on 1,077 arena decisions with identical
 # Stockfish scores, 0.3 lowered the true-board value lost from 0.0657 to 0.0633; in games it did not show.
+FOG_TAX = float(os.environ.get("FOW_FOG_TAX", "0"))  # charge, per expected pawn of ours that an unseen piece can take
+# for free after the move, on top of what Stockfish already saw on the sampled boards. The belief
+# under-predicts such threats about 2x on the arena (5% predicted, 11% realized), so a charge of 1
+# doubles what the boards say and calibrates the expected loss. Greek Gift keeps 1.47 points on
+# fog-attacked squares after its moves, we keep 1.88.
+FOG_TAX_MOVES = 8          # moves taxed: the best this many by value
+FOG_TAX_STATES = 32        # heaviest scored states used
+PAWN_VALUE = 100.0 / 600.0 # one pawn on the tanh(cp / 600) scale
+PIECE_PAWNS = {chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.0, chess.ROOK: 5.0, chess.QUEEN: 9.0}
 RISK_LAMBDA = float(os.environ.get("FOW_RISK_LAMBDA", "1.0"))  # price of losing the king, in units of a lost
 # position. At the 40 fatal king walks of our arena losses the belief gave the move a median 12% risk
 # and the safest alternative 0.1%; the value gap it took the risk for was a Stockfish gap, measured as
@@ -391,6 +400,57 @@ def _apply_fog_rules(root: _Root, our_moves: Sequence[chess.Move], values: np.nd
                 values[index] = DRAW
 
 
+def free_to_unseen(board: chess.Board, side: chess.Color, view: Sequence[str]) -> float:
+    """Pawns of ours, on ``board`` with the opponent to move, that an enemy piece standing on a
+    square we cannot see can take at a profit: the piece's value if nothing of ours defends it,
+    else the value minus the cheapest such attacker's where that is less."""
+    loss = 0.0
+    for sq, piece in board.piece_map().items():
+        if piece.color != side or piece.piece_type == chess.KING:
+            continue
+        attackers = [board.piece_at(a).piece_type for a in board.attackers(not side, sq) if view[a] == "?"]
+        if not attackers:
+            continue
+        value = PIECE_PAWNS[piece.piece_type]
+        if not board.attackers(side, sq):
+            loss += value
+        else:
+            cheapest = min(PIECE_PAWNS.get(a, 0.0) for a in attackers)
+            if cheapest < value:
+                loss += value - cheapest
+    return loss
+
+
+def fog_tax(evidence: Evidence, root_weight: np.ndarray, our_moves: Sequence[chess.Move],
+            side: chess.Color, value: np.ndarray) -> np.ndarray:
+    """``value`` less FOG_TAX times the expected free loss to unseen attackers after each of the
+    best FOG_TAX_MOVES moves, over the heaviest FOG_TAX_STATES scored states."""
+    if evidence.scan_states is None or evidence.root_index is None:
+        return value
+    heavy = np.argsort(-root_weight)[:FOG_TAX_STATES]
+    states = [evidence.scan_states[evidence.root_index[i]] for i in heavy]
+    weights = root_weight[heavy]
+    taxed = value.copy()
+    for index in np.argsort(-value)[:FOG_TAX_MOVES]:
+        move = our_moves[index]
+        total = loss = 0.0
+        for state, w in zip(states, weights):
+            if w <= 0:
+                continue
+            if move not in state.pseudo_legal_moves and not state.is_legal(move):
+                continue
+            state.push(move)
+            try:
+                if not side_to_move_wins(state):
+                    loss += w * free_to_unseen(state, side, observation(state, side))
+                    total += w
+            finally:
+                state.pop()
+        if total > 0:
+            taxed[index] = value[index] - FOG_TAX * PAWN_VALUE * loss / total
+    return taxed
+
+
 def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
           uniform_risk: np.ndarray | None = None,
           exact_risk: np.ndarray | None = None,
@@ -506,6 +566,10 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
         if check_share < KING_PENALTY_CHECK_SHARE and own >= KING_PENALTY_MIN_PIECES:
             king = "K" if side else "k"
             value = value - KING_PENALTY * np.array([view[m.from_square] == king for m in our_moves], dtype=float)
+
+    if FOG_TAX > 0:
+        root_w = np.where(evidence.root_attacked, ATTACKED_WEIGHT, 1.0) * (evidence.root_count if evidence.root_count is not None else 1.0)
+        value = fog_tax(evidence, root_w, our_moves, side, value)
 
     if infoset.INFOSET and evidence.scan_states is not None and evidence.root_index is not None:
         root_states = [evidence.scan_states[i] for i in evidence.root_index]
