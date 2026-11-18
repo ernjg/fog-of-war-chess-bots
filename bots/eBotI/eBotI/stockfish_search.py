@@ -40,6 +40,13 @@ UNIFORM_SHARE = 0.3        # of the king-loss risk, the part estimated on an equ
 # and its conditional value at risk, the weighted mean of its worst CVAR_TAIL of the weight.
 # A move that is fine on most boards and bad on a few is then priced for the few.
 CVAR_TAIL = 0.3
+# StrangeFish2's rule (won the 2022 RBC competition): part of a move's value is its worst
+# scored board, every board counting alike. Offline on 1,077 arena decisions with identical
+# Stockfish scores, 0.3 lowered the true-board value lost from 0.0657 to 0.0633; in games it did not show.
+WORST_MIX = float(os.environ.get("FOW_WORST", "0"))  # against v3 over 80 games it changed nothing: off
+KING_PENALTY = float(os.environ.get("FOW_KING_PENALTY", "0"))  # off king moves while the belief says we are not in check
+KING_PENALTY_CHECK_SHARE = 0.2
+KING_PENALTY_MIN_PIECES = 5
 CVAR_WEIGHT = float(os.environ.get("FOW_CVAR", "0"))  # 0: the plain mean (v4); 1: the tail alone
 RESERVE = 0.06             # seconds kept back for stopping the engines and choosing
 MIN_ENGINE_SECONDS = 0.05
@@ -53,7 +60,8 @@ DRAW = 0.0
 # of kings lost over 2,675 replayed decisions. The 6 is kept all the same: the choice of
 # move hardly depends on it there, and the weights judge a check from an unseen square as
 # ordinary chess would, a poor move if it can be blocked, when here it is a strong one.
-ATTACKED_WEIGHT = 6.0
+ATTACKED_WEIGHT = float(os.environ.get("FOW_ATTACKED", "6.0"))  # boards with our king attacked count this much more
+THREAT_WEIGHT = float(os.environ.get("FOW_THREAT", "1.0"))      # per piece of ours attacked from the fog: the belief under-rates such boards (arena: 1.5 calibrates)
 WIN, LOSS = 1.0, -1.0
 
 
@@ -209,6 +217,8 @@ class Evidence:
     depths: tuple[int, ...]    # search depth completed on each state that had legal moves
     scan_count: np.ndarray | None = None  # (S,) times each scanned state was drawn; None: once each
     root_count: np.ndarray | None = None  # (R,) the same for the scored states
+    scan_states: list | None = None       # (S,) the scanned states themselves, for reweighing afterwards
+    root_index: np.ndarray | None = None  # (R,) index of each scored state among the scanned
 
 
 def draw(states: Sequence[FowBoard], weights: Sequence[float] | None, rng: random.Random
@@ -233,9 +243,18 @@ def draw(states: Sequence[FowBoard], weights: Sequence[float] | None, rng: rando
     return [(states[order[j]], float(counts[j])) for j in drawn]
 
 
+def fog_threats(board: chess.Board, side: chess.Color, view: str) -> int:
+    """How many of our pieces an enemy piece on a square we cannot see attacks."""
+    n = 0
+    for sq, piece in board.piece_map().items():
+        if piece.color == side and any(view[a] == "?" for a in board.attackers(not side, sq)):
+            n += 1
+    return n
+
+
 def gather(pool: EnginePool, states: Sequence[FowBoard], our_moves: Sequence[chess.Move],
            side: chess.Color, deadline: float, rng: random.Random,
-           weights: Sequence[float] | None = None) -> Evidence | None:
+           weights: Sequence[float] | None = None, view: str | None = None) -> Evidence | None:
     """Scan sampled ``states`` for moves that lose the king and have Stockfish score as many
     as fit before ``deadline``. ``weights`` (one per state, optional) decide which states
     are sampled and how much each counts. None when nothing usable came of it."""
@@ -263,6 +282,8 @@ def gather(pool: EnginePool, states: Sequence[FowBoard], our_moves: Sequence[che
         scan_suicide[row, list(classes.suicide)] = True
     scan_attacked = np.array([state.is_check() for state, _ in scanned])
     scan_count = np.array(counts)
+    if view is not None and THREAT_WEIGHT != 1.0:
+        scan_count = scan_count * THREAT_WEIGHT ** np.array([fog_threats(state, side, view) for state, _ in scanned], dtype=float)
 
     # 2. Have Stockfish score the first of those states, as many as the time allows.
     engine_seconds = deadline - time.monotonic()
@@ -324,7 +345,8 @@ def gather(pool: EnginePool, states: Sequence[FowBoard], our_moves: Sequence[che
     if len(use) == 0 or (scan_suicide[kept].all() and not scan_suicide.all()):
         return None
     return Evidence(scan_attacked, scan_suicide, scan_attacked[kept], scan_suicide[kept],
-                    values[use], len(roots), tuple(depths), scan_count, scan_count[kept])
+                    values[use], len(roots), tuple(depths), scan_count, scan_count[kept],
+                    [state for state, _ in scanned], kept)
 
 
 def _apply_fog_rules(root: _Root, our_moves: Sequence[chess.Move], values: np.ndarray) -> None:
@@ -404,6 +426,9 @@ def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
     unknown = float(np.min(total[known] / count[known])) if known.any() else LOSS
     mean = np.where(known, total / np.maximum(count, 1e-12), unknown)
     when_safe = mean
+    if WORST_MIX > 0 and len(evidence.root_values):
+        worst = np.where(known, np.where(safe, evidence.root_values, np.inf).min(axis=0), unknown)
+        when_safe = (1.0 - WORST_MIX) * mean + WORST_MIX * worst
     if CVAR_WEIGHT > 0 and len(evidence.root_values):
         tail = np.empty(len(mean))
         for a in range(len(mean)):
@@ -443,7 +468,8 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
                      weights: Sequence[float] | None = None,
                      uniform_states: Sequence[FowBoard] | None = None,
                      exact_risk: Sequence[float] | None = None,
-                     hazard: Sequence[float] | None = None) -> StockfishResult | None:
+                     hazard: Sequence[float] | None = None,
+                     view: str | None = None) -> StockfishResult | None:
     """The move with the best value over sampled ``states``; see ``weigh`` for the value.
 
     ``hazard`` is the empirical chance, per move, that an unseen piece attacks our king
@@ -456,13 +482,21 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
     no state the engine finished. The caller then falls back to the PCFR+ search.
     """
     evidence = gather(pool, states, our_moves, side, time.monotonic() + budget - RESERVE, rng,
-                      weights)
+                      weights, view)
     if evidence is None:
         return None
     uniform_risk = suicide_share(uniform_states, our_moves) if uniform_states else None
     value, risk = weigh(evidence, uniform_risk=uniform_risk,
                         exact_risk=None if exact_risk is None else np.asarray(exact_risk, dtype=float),
                         hazard=None if hazard is None else np.asarray(hazard, dtype=float))
+
+    if KING_PENALTY > 0 and view is not None:
+        scan_weight = np.where(evidence.scan_attacked, ATTACKED_WEIGHT, 1.0) * (evidence.scan_count if evidence.scan_count is not None else 1.0)
+        check_share = float(scan_weight @ evidence.scan_attacked) / float(scan_weight.sum())
+        own = sum(1 for c in view if c not in "?-" and c.isupper() == bool(side))
+        if check_share < KING_PENALTY_CHECK_SHARE and own >= KING_PENALTY_MIN_PIECES:
+            king = "K" if side else "k"
+            value = value - KING_PENALTY * np.array([view[m.from_square] == king for m in our_moves], dtype=float)
 
     # Choose: exact ties at random, and not the same shuffle again when winning.
     ranked = value + 1e-9 * np.array([rng.random() for _ in our_moves])

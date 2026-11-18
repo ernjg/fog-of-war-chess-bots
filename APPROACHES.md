@@ -187,7 +187,7 @@ positions we can evaluate.
   v4 ran on two, so every eBotI-vs-v4 match before this note overstated eBotI by a factor of
   two in compute. eBotI is now set to 2 engines.
 
-## 8. What the data suggests instead: an empirical king hazard (current attempt)
+## 8. An empirical king hazard (tested, not adopted)
 
 The failures above share a cause: every attempt routed the fix through the belief weights,
 and the belief is diffuse by an order of magnitude at exactly the decisions that lose. The
@@ -203,20 +203,75 @@ from the arena's own frequency, independent of the weights we know are wrong. It
 (a ray count per candidate move), and it attacks the 23 of 26 fatal decisions that were a
 king walking onto, or staying on, an exposed square.
 
-**Known limits.** The hazard was measured under v4's own move choices (selection bias: the
-alternatives it rejected may carry different hazard); it is a marginal rate, so it will
-sometimes penalize a square that happens to be safe and miss a quiet line with a queen on
-it; and the opponent pool will drift. The replay test on the 63 lost games (fatal decision
-plus three ordinary ones per game, search with and without the hazard on the same belief,
-judged on the true board) is the first check; a long match against v4 at 180+2 with 2
-engines is the second.
+**Why it failed, in theory (independent review).** The rate was fitted on the moves v4
+chose, i.e. on moves the belief had already passed as safe, so it is a residual over the
+belief; evaluated on the moves v4 rejected it under-predicts by 4-10x. Compounding it with
+the belief's own risk double counts wherever the belief is informed. Its spread between
+moves exceeds 0.05 in only 14% of decisions, almost all positions already lost (the
+opponent led by 8 points of material on average at the fatal decisions). The self-play match
+against v4 stood 42-42 after 84 games and could not have shown a 3-point effect in fewer
+than about 2,200 games. Off by default (`FOW_HAZARD=0`).
 
-## Measurement notes
+## 9. Recalibrating the belief's weights (tested, no effect)
 
+**What.** Replaying all 150 arena games through the belief (4,807 decisions) to compare what
+the belief predicts with what happened. Checks from the fog: predicted 1.7%, realized 1.6%,
+calibrated; with the x6 attacked-king weight the search acts as if the share were 2-2.5x the
+real one in the decisions that matter, and moves the king in 56-63% of them. Threats to the
+piece we just moved: under-predicted (5% predicted where 11% happened); a weight of 1.5 per
+threatened piece calibrates every bucket. Both are now `FOW_ATTACKED` and `FOW_THREAT`.
+
+**Result.** On identical Stockfish evidence (1,393 decisions, 40 games) changing the
+attacked weight from 6 to 1 changes 18 decisions and leaves king moves at 237 vs 235; the
+threat weight changes 73 and nothing improves.
+
+**Why.** The x6 weight only matters where the raw belief already puts tens of percent on
+being in check, and there moving the king is right under any weight. The king walks are the
+rational choice under a belief that is calibrated on average and wrong only in the tail,
+where the true attacker sits on a board of negligible weight. No reweighting of the boards
+we have can repair a tail the weights cannot see.
+
+## 10. Worst-board mix and king discipline (offline gain, no gain in games)
+
+**What.** StrangeFish2's rule, value = 0.7 x weighted mean + 0.3 x unweighted worst scored
+board (`FOW_WORST`), and a penalty on king moves while the belief says we are not in check and
+we have 5+ pieces (`FOW_KING_PENALTY`). Both scored offline on the saved evidence of 1,393
+decisions, then played against the frozen v3 (arena 45%) for 80 games each at 180+2.
+
+**Result.** Offline the mix lowered true-board value lost from 0.0657 to 0.0633 and moves
+into fog attacks from 310 to 273; the king penalty cut king moves from 242 to 96 and next-ply
+king losses from 19 to 15 at a cost in true-board value. In games: v4 0.825, mix 0.825,
+mix + penalty 0.812, with 14, 14 and 14 losses, and no reduction in material lost to unseen
+attackers (8.1, 9.4, 10.0 per game). Both off by default.
+
+**Why.** The next-ply metrics measure the move; the games are lost two to five plies later,
+when the slider swings onto the line the king or piece has walked onto. A rule that makes
+the next move safer without changing where the pieces stand two moves later does not change
+the outcome, and a king that moves less stands longer on the line it is already on.
+
+## 11. Benchmarks (what finally measures anything)
+
+- Self-play against v4 measures only the differential of two near-identical bots: 42-42
+  after 84 games, and about 2,200 games for a 3-point effect.
+- A cheap sparring bot (`bots/sparring`: Stockfish on a last-seen board, 30 ms a move, four
+  styles) is beaten 90-0 by v4 and separates nothing. The arena's winners are engine-on-
+  belief bots of our own class (34% top-1 agreement with true-board Stockfish, same as us,
+  4-5 s a move), not heuristics (`docs/arena-opponents.md`).
+- The frozen v3 is an arena-class, genuinely different opponent; v4 scores 0.825 against it.
+  80 games there have a standard error of 4 points, so only large effects show.
+- Same-evidence offline scoring (`tools/arena/paired_aggregation.py`, then
+  `rules_offline.py`) compares aggregation rules with no engine noise, in seconds, but judges
+  only the next ply.
 - *The per-move replay metric does not predict games.* Mean true-board value lost per
   decision favored v2 by 11% while v2 lost 5-9. Fog-of-war games are decided by rare
-  catastrophic events (one unseen attack ends the game), a heavy-tailed loss; a mean over
-  decisions at depth 8 is dominated by small positional differences and blind to the tail.
-  Any metric for this game must count catastrophes, not average evaluations.
-- *The clean local judge is a long match at 180+2 with 2 engines per bot.* 300 games bring
-  the standard error to about 3 points; that is an overnight run at four games in parallel.
+  catastrophic events, a heavy-tailed loss; a mean over decisions is blind to the tail.
+- The arena itself is the only judge with enough games for a 3-point change.
+
+## What is left with evidence behind it
+
+The belief, not the search. Fianchetto's ablation (RBC 2021, `docs/rbc-notes.md`) is the
+one published result where a change of this kind moved a bot from 40% to 65%: a persistent
+Bayesian belief with a real opponent-move model, mixed with uniform by set size, and later
+tuned per opponent. Our opponents are deterministic bots with public replays, so a
+per-opponent move model is possible. It is a multi-day build and the arena would have to
+judge it.

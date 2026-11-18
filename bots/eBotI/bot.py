@@ -41,7 +41,7 @@ MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the 
 TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
 RISK_UNIFORM_SHARE = float(os.environ.get("FOW_RISK_UNIFORM", "0"))  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
 UNCERTAIN_TIME = float(os.environ.get("FOW_TIME", "1.0"))  # budget multiplier reached when the set has 10,000 or more positions
-HAZARD_SCALE = float(os.environ.get("FOW_HAZARD", "1.0"))  # 0 turns the empirical king hazard off
+HAZARD_SCALE = float(os.environ.get("FOW_HAZARD", "0"))  # the empirical king hazard; 0 (default) is off
 BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
 BELIEF_SHARE = 0.4            # of a move's time, at most, for updating the belief
@@ -426,7 +426,7 @@ class ObscuroAgent(Agent):
             result = stockfish_search(pool, self.belief.states, moves, self.side, budget,
                                       self.rng, repeat_counts, weights,
                                       getattr(self.belief, "uniform_states", None), exact_risk,
-                                      hazard)
+                                      hazard, self.tracker.current)
         except Exception:
             log("obscuro: stockfish search failed")
             traceback.print_exc(file=sys.stderr)

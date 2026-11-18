@@ -40,6 +40,13 @@ FAKE_ENGINE = Path(__file__).with_name("fake_uci_engine.py")
 CASES = {
     "random": ("random", [], None, []),
     "greedy": ("greedy", [], None, []),
+    # The sparring partner: Stockfish on a last-seen guess of the board, in several styles.
+    # The style is an argument here (FOW_STYLE sets it when run from the tournament tool).
+    "sparring": ("sparring", [], "", ["sparring: style plain", "sparring: engine ready", "sparring[plain]: "]),
+    "sparring hunter": ("sparring", ["--style", "hunter"], "",
+                        ["sparring: style hunter", "sparring: engine ready", "sparring[hunter]: "]),
+    "sparring, no engine built": ("sparring", ["--stockfish", "no/such/binary"], None,
+                                  ["no engine at", "no engine"]),
     "obscuro": ("obscuro", [*OBSCURO, "0.05", "--stockfish", "off"], None,
                 ["stockfish is switched off"]),
     "obscuro, no engine built": ("obscuro", [*OBSCURO, "0.05", "--stockfish", "no/such/binary"],
