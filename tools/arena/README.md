@@ -16,3 +16,12 @@ Scripts that judge a bot on arena data instead of self-play. All read the public
 | `gauntlet_metrics.py label=data/<run> ...` | per configuration: score and fog events (material lost to unseen attackers, king moves) over local games |
 
 Findings from these are in `APPROACHES.md` and `docs/arena-opponents.md`.
+
+Added 2026-11-18 (the cache holds `replays_cache.pkl` and `games_list.json` from `loss_patterns.py`):
+
+| script | what it answers |
+| --- | --- |
+| `truth_in_set.py <first> <last> [losses\|all]` | replays our games through eBotI's position set: is the true board in the set, with what weight share, at every decision |
+| `truth_risk.py <first> <last> [losses\|all]` | the same plus the exact king risk of every candidate move, to compare the chosen move with the safest one |
+| `opp_model_calib.py <first> <last>` | log-likelihood of the opponents' real moves under the true-board one-ply model and under a blind (opponent's view) model |
+| `match_anatomy.py <data dir>` | per bot in a local tournament: score, how its losses end (walk-in / unanswered unseen check / seen), king moves, material lost to unseen attackers |

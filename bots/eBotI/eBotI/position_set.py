@@ -33,8 +33,8 @@ from referee import FowBoard
 from .belief import HEAD_SHARE, MIN_POOL, Belief
 from .opponent import KING_MISS, OTHER, Policy
 
-SAMPLE_STATES = 1024     # states handed to the search: stockfish_search.SCAN_STATES draws
-UNIFORM_STATES = 512     # and, when the set is sampled by weight, this many drawn with equal odds
+SAMPLE_STATES = int(os.environ.get("FOW_SCAN", "256"))  # states handed to the search (v4: 256)
+UNIFORM_STATES = int(os.environ.get("FOW_UNIFORM_STATES", "0"))  # and, when the set is sampled by weight, this many drawn with equal odds (v4: none)
 MAX_STATES = 200_000     # the most the helper keeps; a larger set is cut down, as in Belief
 FALLBACK_STATES = 1500   # the cap of the Python belief that takes over if the helper is lost
 ASK_STATES = 512         # states per opponent move that the policy is asked about, at most
@@ -326,7 +326,7 @@ class PositionSet:
             raise HelperError("the helper has no states")
         self.states, self._weights = states, weights
         self.uniform_states = []
-        if word == "sample":
+        if word == "sample" and UNIFORM_STATES > 0:
             # a second sample with equal odds: the king-safety scan looks at both, since the
             # weights can rate the true position too unlikely to be drawn
             _, rows = self.helper.ask(f"usample {UNIFORM_STATES}", time.monotonic() + ANSWER_SECONDS)

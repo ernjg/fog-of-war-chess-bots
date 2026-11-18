@@ -1,6 +1,7 @@
 """One move of search: sample roots, build the subgame, solve it, pick a move."""
 from __future__ import annotations
 
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -12,6 +13,12 @@ from .engine import EnginePool
 from .solver import Depth2Solver
 from .subgame import SubgameBuilder
 
+CLOCK_RULE = os.environ.get("FOW_CLOCK", "v4")  # "v4": remaining/30 + 0.8*inc; "reserve": see move_budget
+CLOCK_RESERVE = 12.0   # seconds kept back; below it a move gets the increment only
+CLOCK_DIVISOR = 40.0   # share of the spare at move 1 ...
+CLOCK_SLOPE = 0.75     # ... growing by this per move ...
+CLOCK_FLOOR = 6.0      # ... up to a sixth of the spare per move
+CLOCK_CAP = 12.0       # seconds, at most, on one move
 BUILD_SHARE = 0.8  # the depth-2 solve converges (gap ~0) in a few hundred iterations
 MAX_ROOTS = 200
 MIN_ITERATIONS = 20
@@ -20,8 +27,14 @@ REPEAT_PENALTY = 0.05  # penalty per earlier visit to the piece layout a move le
 DRAW_SHARE = 0.5       # penalty for a move that may repeat a position a third time, as a share of our lead
 
 
-def move_budget(remaining: float, increment: float) -> float:
+def move_budget(remaining: float, increment: float, move_number: int = 1) -> float:
     """Seconds to spend on this move: a slice of the bank plus most of the increment."""
+    if CLOCK_RULE == "reserve":
+        # Greek Gift's shape, read off its arena clocks: the increment plus a share of what is
+        # left above a reserve, the share growing with the move number; it ends games near the
+        # reserve instead of with a minute unused.
+        divisor = max(CLOCK_FLOOR, CLOCK_DIVISOR - CLOCK_SLOPE * move_number)
+        return max(0.1, min(increment + max(0.0, remaining - CLOCK_RESERVE) / divisor, CLOCK_CAP, remaining / 4))
     return min(remaining / 30 + 0.8 * increment, remaining / 5)
 
 

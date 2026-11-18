@@ -2,6 +2,7 @@
 decide fog-of-war games (king lost to an unseen attacker, material lost to unseen attackers,
 king moves). Usage: python gauntlet_metrics.py <label>=<data dir> ..."""
 import glob, json, sys
+from pathlib import Path
 import chess
 sys.path.insert(0, str(Path(__file__).resolve().parents[2])); import fow
 from referee import FowBoard, observation

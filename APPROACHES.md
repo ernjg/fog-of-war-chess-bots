@@ -267,9 +267,82 @@ the outcome, and a king that moves less stands longer on the line it is already 
   catastrophic events, a heavy-tailed loss; a mean over decisions is blind to the tail.
 - The arena itself is the only judge with enough games for a 3-point change.
 
+## 12. What the belief knew at the fatal decisions (measured 2026-11-18)
+
+**What.** Every lost arena game replayed through our own position set (same helper as v4,
+cap 200k, opponent model on), asking at each of our decisions whether the true board is in
+the set, its weight share, and the exact king risk of every candidate move
+(`tools/arena/truth_in_set.py`, `truth_risk.py`).
+
+**Result.** The true board is in the set at 92% of decisions (100% to ply 20; 14 of 55 games
+lose it once, always when the set hits the 200k cap) and at 87% of the 40 fatal king walks.
+There the belief was not blind: the chosen move lost the king at once in a median 12% of
+the set's weight (quartiles 5% and 19%), the safest alternative in 0.1%; the chosen move was
+the least risky one in 15% of cases. Across all decisions the risk is calibrated, even
+conservative: moves given 3-10% died 15% of the time, moves given over 10% died 22%. In won
+games the bot takes such risks 0.9 times a game, in lost games 3.4 times.
+
+**Why.** The value is ``-risk + (1 - risk) * mean``: a death and a lost position cost the
+same. The mean is Stockfish's, which scores a board as if both sides saw everything from
+there on, so a rook down reads as hopeless (-0.9) and a 12% chance of instant death is cheap
+beside a move that lifts the mean by 0.3. In the fog a rook down is not hopeless: the
+opponent has to find the king. The exchange rate between death and evaluation is wrong by
+several times. Greek Gift's king steps onto an attacked square in 1.1% of its king moves
+(ours 6.1%) and it keeps that rate in won positions.
+
+## 13. Pricing the king (``FOW_RISK_LAMBDA``; tested, no gain)
+
+**What.** ``-lambda * risk + (1 - risk) * mean`` with lambda 5, exact risk over the whole set.
+
+**Result.** 21-5-29 against v4 at 60+1 (54 games). In eBotI's 28 losses the logged value
+was below -0.5 six moves before the end in 24; in v4's 20 losses, in 16. The fatal risks
+were taken in positions already lost: by then every king move was risky (the logged risk of
+the fatal move was 0.1-1.0) and pricing the risk changes nothing.
+
+**Why.** The walk-in is the symptom. The arena numbers are the same: at the fatal decisions
+the opponent led by 8 points of material on average. What decides the games happens
+earlier, when the material goes (section 14). The switch stays, off.
+
+## 14. A blind opponent model (rejected by likelihood)
+
+**What.** Replace the one-ply Stockfish model on the true board by one-ply Stockfish on
+what the opponent can see (our unseen pieces removed), since the opponents are engine-on-
+belief bots that do not see our hidden pieces. If true, the belief would sharpen and the
+Greek-gift bait (a hung queen protected by a hidden piece) would follow from the search.
+
+**Result.** On 4,783 real opponent moves from 125 arena games
+(`tools/arena/opp_model_calib.py`) the true-board model makes the move played 2.05x as
+likely as equal odds (top-1 27%); the blind model 1.17x (top-1 12%), worse at every
+temperature and in every bucket of how many of our pieces were hidden. On captures the
+true-board model is at 4.8x (top-1 53%).
+
+**Why.** The opponents' beliefs are good: they capture when Stockfish on the true board
+says so. A board with our pieces removed is not what they see; what they see is a sample
+of plausible placements, which behaves on average like the true board. Modelling them as
+blind throws away what they know.
+
+## 15. Two plies with the fog in them (``FOW_INFOSET``; testing)
+
+**What.** The information-set correction at depth two (`eBotI/infoset.py`): for the best
+five moves by the one-ply value, on the twelve heaviest scored states, the three likeliest
+replies (same one-ply model); group the (state, reply) pairs by the view we would have
+after the reply; our next move must be one move per group, chosen for the group's weighted
+mean; the move's value is the mean over groups. Half the budget, depth 6 at the leaves.
+
+**Why it should work.** Stockfish's value of a board after our move assumes we see the
+reply before we move again. The expectation over boards of a maximum is at least the
+maximum of the expectation (Jensen), so the one-ply value is an upper bound, loosest for
+the moves that leave most of the board unseen. This is the shape of 73% of the lost games:
+material, then the king, lost two to five plies after a move the engine liked, to a piece
+that swung onto a line we could not see. Sections 2-11 all averaged the same biased value;
+this changes the value.
+
+**Status.** 100 games against v4 at 120+2 running (started 12:40 on 2026-11-18).
+
 ## What is left with evidence behind it
 
-The belief, not the search. Fianchetto's ablation (RBC 2021, `docs/rbc-notes.md`) is the
+The value, then the belief. Section 15 is the first change to the value itself.
+After it, the belief: Fianchetto's ablation (RBC 2021, `docs/rbc-notes.md`) is the
 one published result where a change of this kind moved a bot from 40% to 65%: a persistent
 Bayesian belief with a real opponent-move model, mixed with uniform by set size, and later
 tuned per opponent. Our opponents are deterministic bots with public replays, so a

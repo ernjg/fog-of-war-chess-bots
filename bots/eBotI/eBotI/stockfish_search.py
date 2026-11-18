@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 import time
+import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -23,6 +25,7 @@ import numpy as np
 
 import fow  # noqa: F401  (puts the starter kit on sys.path)
 from referee import FowBoard
+from fow.protocol import log
 
 from .engine import EnginePool, Job, mate_value
 from .rules import side_to_move_wins
@@ -30,11 +33,11 @@ from .search import choose_action
 
 MAX_ROOTS = int(os.environ.get("FOW_ROOTS", "64"))  # belief states Stockfish scores per move: breadth over depth, the
                            # losses come from boards never scored, not from shallow scores
-SCAN_STATES = 1024         # belief states checked for moves that lose the king at once (0.1 ms each)
+SCAN_STATES = int(os.environ.get("FOW_SCAN", "256"))  # belief states checked for moves that lose the king at once (v4: 256)
 SCAN_SHARE = 0.1           # of the budget, at most, for that check
-MAX_DEPTH = 18             # with few states the position is nearly known: search it like chess
+MAX_DEPTH = int(os.environ.get("FOW_DEPTH", "12"))    # v4: 12
 MIN_SLICE = 0.02           # seconds of search per position, at least
-MAX_SLICE = 2.0            # and at most: with few states left, bank the rest
+MAX_SLICE = float(os.environ.get("FOW_SLICE", "1.0"))  # and at most (v4: 1.0)
 UNIFORM_SHARE = 0.3        # of the king-loss risk, the part estimated on an equal-odds sample
 # Risk-averse aggregation: a move's value over the boards is a blend of its weighted mean
 # and its conditional value at risk, the weighted mean of its worst CVAR_TAIL of the weight.
@@ -43,6 +46,10 @@ CVAR_TAIL = 0.3
 # StrangeFish2's rule (won the 2022 RBC competition): part of a move's value is its worst
 # scored board, every board counting alike. Offline on 1,077 arena decisions with identical
 # Stockfish scores, 0.3 lowered the true-board value lost from 0.0657 to 0.0633; in games it did not show.
+RISK_LAMBDA = float(os.environ.get("FOW_RISK_LAMBDA", "1.0"))  # price of losing the king, in units of a lost
+# position. At the 40 fatal king walks of our arena losses the belief gave the move a median 12% risk
+# and the safest alternative 0.1%; the value gap it took the risk for was a Stockfish gap, measured as
+# if we could see everything afterwards, which overstates what material is worth in the fog.
 WORST_MIX = float(os.environ.get("FOW_WORST", "0"))  # against v3 over 80 games it changed nothing: off
 KING_PENALTY = float(os.environ.get("FOW_KING_PENALTY", "0"))  # off king moves while the belief says we are not in check
 KING_PENALTY_CHECK_SHARE = 0.2
@@ -443,7 +450,7 @@ def weigh(evidence: Evidence, attacked_weight: float = ATTACKED_WEIGHT,
             keep = order[:max(1, int(np.searchsorted(cum, CVAR_TAIL * cum[-1], side="right")) + 1)]
             tail[a] = float(weights[keep] @ values[keep] / weights[keep].sum())
         when_safe = (1.0 - CVAR_WEIGHT) * mean + CVAR_WEIGHT * tail
-    return -risk + (1.0 - risk) * when_safe, risk
+    return -RISK_LAMBDA * risk + (1.0 - risk) * when_safe, risk
 
 
 def suicide_share(states: Sequence[FowBoard], our_moves: Sequence[chess.Move],
@@ -481,8 +488,10 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
     None when it cannot say anything: no engine, no time, no state that fits our view, or
     no state the engine finished. The caller then falls back to the PCFR+ search.
     """
-    evidence = gather(pool, states, our_moves, side, time.monotonic() + budget - RESERVE, rng,
-                      weights, view)
+    from . import infoset  # here, not at the top: infoset imports this module
+    final_deadline = time.monotonic() + budget - RESERVE
+    one_ply_deadline = final_deadline - (budget * infoset.SHARE if infoset.INFOSET else 0.0)
+    evidence = gather(pool, states, our_moves, side, one_ply_deadline, rng, weights, view)
     if evidence is None:
         return None
     uniform_risk = suicide_share(uniform_states, our_moves) if uniform_states else None
@@ -497,6 +506,17 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
         if check_share < KING_PENALTY_CHECK_SHARE and own >= KING_PENALTY_MIN_PIECES:
             king = "K" if side else "k"
             value = value - KING_PENALTY * np.array([view[m.from_square] == king for m in our_moves], dtype=float)
+
+    if infoset.INFOSET and evidence.scan_states is not None and evidence.root_index is not None:
+        root_states = [evidence.scan_states[i] for i in evidence.root_index]
+        root_w = np.where(evidence.root_attacked, ATTACKED_WEIGHT, 1.0) * (evidence.root_count if evidence.root_count is not None else 1.0)
+        try:
+            refined = infoset.refine(pool, root_states, root_w, our_moves, value, side, final_deadline, log)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            refined = None
+        if refined is not None:
+            value = refined
 
     # Choose: exact ties at random, and not the same shuffle again when winning.
     ranked = value + 1e-9 * np.array([rng.random() for _ in our_moves])

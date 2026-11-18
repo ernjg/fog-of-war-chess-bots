@@ -41,6 +41,7 @@ MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the 
 TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
 RISK_UNIFORM_SHARE = float(os.environ.get("FOW_RISK_UNIFORM", "0"))  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
 UNCERTAIN_TIME = float(os.environ.get("FOW_TIME", "1.0"))  # budget multiplier reached when the set has 10,000 or more positions
+EXACT_RISK = os.environ.get("FOW_EXACT_RISK", "0") == "1"  # king risk counted over the whole set by the helper (v4 samples)
 HAZARD_SCALE = float(os.environ.get("FOW_HAZARD", "0"))  # the empirical king hazard; 0 (default) is off
 BRIEF_SEARCH_SECONDS = 0.4    # a move gets at least this much search ...
 HEALTHY_CLOCK_SECONDS = 20.0  # ... while this much is left on the clock
@@ -330,7 +331,7 @@ class ObscuroAgent(Agent):
         else:
             # The belief update already used `spent` seconds of this turn's clock.
             left = remaining_time - spent
-            budget = move_budget(left, self.increment) * self._uncertainty_factor() - spent
+            budget = move_budget(left, self.increment, 1 + self.plies // 2) * self._uncertainty_factor() - spent
             budget = min(budget, left / 4)
             if budget < BRIEF_SEARCH_SECONDS and left >= HEALTHY_CLOCK_SECONDS:
                 # A slow belief update has used up this move's slice. With this much on
@@ -421,7 +422,7 @@ class ObscuroAgent(Agent):
                 return None
             budget = deadline - time.monotonic()
             weights = self.belief.weights if self.belief.weighted else None
-            exact_risk = self._exact_risk(moves)
+            exact_risk = self._exact_risk(moves) if EXACT_RISK else None
             hazard = self._hazard(moves, weights)
             result = stockfish_search(pool, self.belief.states, moves, self.side, budget,
                                       self.rng, repeat_counts, weights,
