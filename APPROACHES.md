@@ -339,6 +339,34 @@ this changes the value.
 
 **Status.** 100 games against v4 at 120+2 running (started 12:40 on 2026-11-18).
 
+## 16. The Greek Gift study and the safe-first rule (2026-11-18, evening)
+
+**What.** Ten replay analyses of the 2302-rated bot (`docs/greek-gift.md`). It is our
+architecture: the same consistent set (its slow mode triggers at exactly 1,000 states counted
+our way), an anytime root search, a view-keyed book, an engine-class evaluator that matches
+Stockfish, Leela and Maia alike only 55-63% on fully known positions (deliberate randomness
+among near-equal moves), no opponent-blindness model, no fog evaluation terms, a belief no
+sharper than ours. The difference that is left is the decision rule: a zero-risk move
+whenever one exists (97% of decisions vs our 93%; king moves 98% vs 91%). At the fatal
+decision 17 of our 54 arena losses had a zero-risk move; 1 of its 11 did.
+
+**Built.** `FOW_SAFE_FIRST=1` (any positive-risk move loses to any zero-risk move),
+`FOW_EXACT_RISK=1` (risk over the whole set), `FOW_ATTACKED=1` (the x6 weight on king-attacked
+states inflated our risk 2x against realized events), `FOW_BOOK=gg`, `FOW_CLOCK=reserve`,
+`FOW_RANDOM` (random choice among near-equal moves), `FOW_FOG_TAX`.
+
+**Result so far.** Safe-first against v4 at 60+1: 13-1-19 when stopped. The rule worked: at
+18 of the 19 fatal decisions no zero-risk move existed. Against v4 we are hunted into
+positions with no safe square before the rule can act; on the arena the losses have safe
+alternatives (17 of 54), so only the arena can judge this one.
+
+**A flaw in every local match today.** Stopping a tournament by killing its parent left the
+multiprocessing workers playing the queued games; up to three tournaments ran at once and the
+load average reached 35 on 10 cores. Both bots of a match were slowed alike, so no result
+favours one side, but all of them had far less compute per move than the arena and more
+noise than reported. A plain eBotI vs v4 control, never run before, is running on a clean
+machine now.
+
 ## What is left with evidence behind it
 
 The value, then the belief. Section 15 is the first change to the value itself.

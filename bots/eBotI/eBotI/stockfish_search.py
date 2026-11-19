@@ -55,6 +55,11 @@ FOG_TAX_MOVES = 8          # moves taxed: the best this many by value
 FOG_TAX_STATES = 32        # heaviest scored states used
 PAWN_VALUE = 100.0 / 600.0 # one pawn on the tanh(cp / 600) scale
 PIECE_PAWNS = {chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.0, chess.ROOK: 5.0, chess.QUEEN: 9.0}
+RANDOM_MARGIN = float(os.environ.get("FOW_RANDOM", "0"))  # pick at random among moves within this much of the
+# best value (0.05 is about a third of a pawn). Greek Gift plays Stockfish's top move only 55-63% of
+# the time on fully known positions, at a median cost of 15-25 cp, and chooses differently in two games
+# from the same known board: deliberate randomness, which keeps a hunter from steering it through
+# repeated positions and keeps its book and style from being read.
 SAFE_FIRST = os.environ.get("FOW_SAFE_FIRST", "0") == "1"  # Greek Gift's rule, read off 8,157 of its decisions
 # replayed through our own position set: when a move exists that loses the king in no consistent
 # position, it plays one of those 97% of the time (we: 93%; on king moves 98% vs 91%). 17 of our 54
@@ -596,6 +601,10 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
     # Choose: exact ties at random, and not the same shuffle again when winning.
     ranked = value + 1e-9 * np.array([rng.random() for _ in our_moves])
     top = int(np.argmax(ranked))
+    if RANDOM_MARGIN > 0:
+        near = np.flatnonzero(ranked >= ranked[top] - RANDOM_MARGIN)
+        if len(near) > 1:
+            top = int(rng.choice(list(near)))
     strategy = np.zeros(len(our_moves))
     strategy[top] = 1.0
     counts = None if repeat_counts is None else np.asarray(repeat_counts, dtype=float)
