@@ -41,7 +41,9 @@ MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the 
 TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
 RISK_UNIFORM_SHARE = float(os.environ.get("FOW_RISK_UNIFORM", "0"))  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
 UNCERTAIN_TIME = float(os.environ.get("FOW_TIME", "1.0"))  # budget multiplier reached when the set has 10,000 or more positions
-EXACT_RISK = os.environ.get("FOW_EXACT_RISK", "0") == "1"  # king risk counted over the whole set by the helper (v4 samples)
+EXACT_RISK = os.environ.get("FOW_EXACT_RISK", "0") == "1"
+HANG_LAMBDA = float(os.environ.get("FOW_HANG", "0"))  # see stockfish_search.HANG_LAMBDA; the helper counts it
+HANG_POSITIONS = 4000     # positions the helper weighs for it (heaviest half, random half)  # king risk counted over the whole set by the helper (v4 samples)
 BOOK = os.environ.get("FOW_BOOK", "")  # "gg": Greek Gift's opening moves from its arena replays, keyed by the view
 BOOK_PLIES = 20
 _BOOK: dict[str, list] | None = None
@@ -449,10 +451,11 @@ class ObscuroAgent(Agent):
             weights = self.belief.weights if self.belief.weighted else None
             exact_risk = self._exact_risk(moves) if EXACT_RISK else None
             hazard = self._hazard(moves, weights)
+            hang = self._exact_hang(moves) if HANG_LAMBDA > 0 else None
             result = stockfish_search(pool, self.belief.states, moves, self.side, budget,
                                       self.rng, repeat_counts, weights,
                                       getattr(self.belief, "uniform_states", None), exact_risk,
-                                      hazard, self.tracker.current)
+                                      hazard, self.tracker.current, hang)
         except Exception:
             log("obscuro: stockfish search failed")
             traceback.print_exc(file=sys.stderr)
@@ -491,6 +494,23 @@ class ObscuroAgent(Agent):
         except Exception:
             traceback.print_exc(file=sys.stderr)
             return None
+
+    def _exact_hang(self, moves: list[chess.Move]) -> list[float] | None:
+        """Per move, from the helper: the expected pawns the opponent can take at once with a
+        piece on a square we will not see (recapture netted off), over the set."""
+        helper = getattr(self.belief, "helper", None)
+        if helper is None or getattr(self.belief, "failure", "") or helper.dead or not moves:
+            return None
+        ucis = " ".join(m.uci() for m in moves)
+        try:
+            _, rows = helper.ask(f"hang {HANG_POSITIONS} 0 {len(moves)} {ucis}", time.monotonic() + 2.0)
+            hang = {row.split()[1]: float(row.split()[2]) for row in rows}
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            return None
+        if len(hang) != len(moves):
+            return None
+        return [hang[m.uci()] for m in moves]
 
     def _exact_risk(self, moves: list[chess.Move]) -> list[float] | None:
         """Per move, from the helper: the share of the whole set in which it loses the king at

@@ -1152,6 +1152,77 @@ int main(int argc, char** argv) {
             }
             printf("trap %zu used=%zu total=%.17g\n", cands.size(), used, total);
             for (size_t c = 0; c < cands.size(); ++c) printf("t %s %.9g\n", to_uci(cands[c]).c_str(), total > 0 ? trapped[c] / total : 0.0);
+        } else if (command == "hang") {
+            // hang <cap> <uniform_share> <k> <uci...>: for each candidate move, the weighted mean
+            // over the set of the most material (pawns: 1 3 3 5 9) the opponent can then win at
+            // once with a piece standing on a square we will not see, minus the capturer when we
+            // can take it back; and the weighted share of positions in which that gain is positive.
+            // Captures of our king are the `risk` command's business and are skipped, as are
+            // positions in which the move loses the king at once. Over `cap` positions the
+            // heaviest half and a random half of the rest are used.
+            unsigned long long cap = 0, k = 0;
+            double uniform_share = 0.0;
+            in >> cap >> uniform_share >> k;
+            std::vector<Move> cands;
+            bool bad = false;
+            for (unsigned long long i = 0; i < k; ++i) { std::string u; Move m; in >> u; if (!parse_uci(u, m)) bad = true; else cands.push_back(m); }
+            if (bad || cands.empty()) { printf("err bad hang\n"); fflush(stdout); continue; }
+            static const double VALUE[6] = {1, 3, 3, 5, 9, 0};
+            double wsum = 0; for (double w : S.weights) wsum += std::max(w, 0.0);
+            double mean_w = S.weights.empty() ? 1.0 : wsum / (double)S.weights.size();
+            std::vector<uint32_t> use;
+            if (cap == 0 || S.states.size() <= cap) { use.resize(S.states.size()); std::iota(use.begin(), use.end(), 0u); }
+            else {
+                std::vector<uint32_t> order(S.states.size());
+                std::iota(order.begin(), order.end(), 0u);
+                std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return S.weights[a] > S.weights[b]; });
+                size_t head = cap / 2;
+                use.assign(order.begin(), order.begin() + head);
+                std::vector<uint32_t> tail(order.begin() + head, order.end());
+                for (size_t i = tail.size(); i > 1; --i) std::swap(tail[i - 1], tail[S.rng.below(i)]);
+                use.insert(use.end(), tail.begin(), tail.begin() + (std::ptrdiff_t)std::min<size_t>(tail.size(), (size_t)(cap - head)));
+            }
+            std::vector<double> gain(cands.size(), 0.0), any(cands.size(), 0.0);
+            double total = 0; size_t used = 0;
+            Move moves[MAX_MOVES], replies[MAX_MOVES];
+            for (uint32_t idx : use) {
+                const Pos& p = S.states[idx];
+                if (p.turn != S.side || wins(p)) continue;
+                int n = gen_moves(p, moves);
+                bool all = true;
+                for (Move m : cands) if (std::find(moves, moves + n, m) == moves + n) { all = false; break; }
+                if (!all) continue;
+                double w = (1.0 - uniform_share) * std::max(S.weights[idx], 0.0) + uniform_share * mean_w;
+                if (w <= 0) continue;
+                total += w; ++used;
+                for (size_t c = 0; c < cands.size(); ++c) {
+                    Pos after = p;
+                    make(after, cands[c]);
+                    if (wins(after)) continue;                 // the king goes: risk, not material
+                    U64 seen = visible_to(after, S.side);
+                    int nr = gen_moves(after, replies);
+                    double best = 0.0;
+                    for (int r = 0; r < nr; ++r) {
+                        int from = replies[r] & 63, to = (replies[r] >> 6) & 63;
+                        if (seen & bit(from)) continue;         // we see the capturer: Stockfish prices it
+                        U64 tb = bit(to);
+                        if (!(after.occ[S.side] & tb)) continue;  // not a capture of ours (en passant left out)
+                        int victim = piece_on(after, to);
+                        if (victim < 0 || victim == KING) continue;
+                        Pos taken = after;
+                        make(taken, replies[r]);
+                        if (wins(taken)) continue;              // it would hang their king: they will not
+                        double g = VALUE[victim];
+                        if (attacked_by(taken, S.side, to)) g -= VALUE[piece_on(after, from)];
+                        if (g > best) best = g;
+                    }
+                    gain[c] += w * best;
+                    if (best > 0) any[c] += w;
+                }
+            }
+            printf("hang %zu used=%zu total=%.17g\n", cands.size(), used, total);
+            for (size_t c = 0; c < cands.size(); ++c)
+                printf("h %s %.9g %.9g\n", to_uci(cands[c]).c_str(), total > 0 ? gain[c] / total : 0.0, total > 0 ? any[c] / total : 0.0);
         } else if (command == "tree") {
             tree_command(in);
         } else {

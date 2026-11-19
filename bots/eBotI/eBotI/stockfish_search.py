@@ -55,6 +55,9 @@ FOG_TAX_MOVES = 8          # moves taxed: the best this many by value
 FOG_TAX_STATES = 32        # heaviest scored states used
 PAWN_VALUE = 100.0 / 600.0 # one pawn on the tanh(cp / 600) scale
 PIECE_PAWNS = {chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.0, chess.ROOK: 5.0, chess.QUEEN: 9.0}
+HANG_LAMBDA = float(os.environ.get("FOW_HANG", "0"))  # price, per expected pawn the opponent can take at once
+                                                      # with a piece we will not see (exact over the set, helper
+                                                      # command `hang`); 1 = fair, more = averse. 0: off (v4)
 RANDOM_MARGIN = float(os.environ.get("FOW_RANDOM", "0"))  # pick at random among moves within this much of the
 # best value (0.05 is about a third of a pawn). Greek Gift plays Stockfish's top move only 55-63% of
 # the time on fully known positions, at a median cost of 15-25 cp, and chooses differently in two games
@@ -547,7 +550,8 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
                      uniform_states: Sequence[FowBoard] | None = None,
                      exact_risk: Sequence[float] | None = None,
                      hazard: Sequence[float] | None = None,
-                     view: str | None = None) -> StockfishResult | None:
+                     view: str | None = None,
+                     hang: Sequence[float] | None = None) -> StockfishResult | None:
     """The move with the best value over sampled ``states``; see ``weigh`` for the value.
 
     ``hazard`` is the empirical chance, per move, that an unseen piece attacks our king
@@ -569,6 +573,10 @@ def stockfish_search(pool: EnginePool, states: Sequence[FowBoard],
     value, risk = weigh(evidence, uniform_risk=uniform_risk,
                         exact_risk=None if exact_risk is None else np.asarray(exact_risk, dtype=float),
                         hazard=None if hazard is None else np.asarray(hazard, dtype=float))
+    if HANG_LAMBDA > 0 and hang is not None:
+        # material the belief says an unseen piece takes next move: Stockfish sees it only on
+        # the roots that hold the attacker, so the tail of the set never reaches the mean
+        value = value - HANG_LAMBDA * PAWN_VALUE * np.asarray(hang, dtype=float)
 
     if KING_PENALTY > 0 and view is not None:
         scan_weight = np.where(evidence.scan_attacked, ATTACKED_WEIGHT, 1.0) * (evidence.scan_count if evidence.scan_count is not None else 1.0)
