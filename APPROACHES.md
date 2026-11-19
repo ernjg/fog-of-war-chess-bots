@@ -401,3 +401,18 @@ netted off, kings excluded. `FOW_HANG=λ` subtracts λ × that (in pawns on the 
 every non-capturing move's value. λ = 1 is fair pricing; the data says the sampled roots
 already hold part of it, and Greek Gift behaves as if λ were larger. Test: λ = 1 against v4,
 150 games at 60+1, after the clock match (eBotI with the reserve clock against v4 at 180+2).
+
+## 18. Greek Gift's own version history as an ablation (2026-11-19)
+
+`docs/research/greek-gift-versions.md`: 120 replays per version of the 2302 bot, v1 to v30,
+17,314 games. Its score rose 0.58 → 0.66 → 0.77 → 0.83 → 0.89 in four jumps, nothing after
+Oct 16. What each jump changed in the replays: v1→v2 a 1.d4 repertoire, a clock rule, fatal
+king moves halved; v2→v14 the drain-the-clock rule (the exact v30 formula) and fewer pieces
+hung to unseen attackers (13.5% → 10.5% of moves); v16→v21 the final book and the material
+discipline (hanging 11.1% → 8.8%, net unseen captures +0.2 → +2.6 a game); v21→v25 losses cut
+threefold in both kinds (walk-ins 1.2 → 0.4 per 1,000 decisions, unanswered checks 13 → 4 per
+120 games) with nothing else moving: the safe-first rule over an accurate set. Fixed-version
+yardsticks: against Instructors v4 it scored 0.25, 0.65, 0.82, 0.82, 0.82, 0.91 by version;
+our v4 scores 0.44 there and 0.38 against Knight Vision v36 (its v16 0.52, v25 0.77). We sit
+between its v1 and v2. The order of its gains is the order to ship ours: king safety rule,
+material pricing, book, clock.
