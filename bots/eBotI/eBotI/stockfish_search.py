@@ -13,6 +13,10 @@ plies further and uses a real evaluation.
 from __future__ import annotations
 
 import os
+# Defaults are the v5 profile (2026-11-19): safe-first rule, exact king risk, no x6 weight on
+# king-attacked states, material hazard priced from the set, reserve clock, Greek Gift book.
+# v4 parity for a local control: FOW_SAFE_FIRST=0 FOW_EXACT_RISK=0 FOW_ATTACKED=6 FOW_HANG=0
+# FOW_CLOCK=v4 FOW_BOOK=none
 import random
 import sys
 import time
@@ -55,7 +59,7 @@ FOG_TAX_MOVES = 8          # moves taxed: the best this many by value
 FOG_TAX_STATES = 32        # heaviest scored states used
 PAWN_VALUE = 100.0 / 600.0 # one pawn on the tanh(cp / 600) scale
 PIECE_PAWNS = {chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.0, chess.ROOK: 5.0, chess.QUEEN: 9.0}
-HANG_LAMBDA = float(os.environ.get("FOW_HANG", "0"))  # price, per expected pawn the opponent can take at once
+HANG_LAMBDA = float(os.environ.get("FOW_HANG", "1"))  # price, per expected pawn the opponent can take at once
                                                       # with a piece we will not see (exact over the set, helper
                                                       # command `hang`); 1 = fair, more = averse. 0: off (v4)
 RANDOM_MARGIN = float(os.environ.get("FOW_RANDOM", "0"))  # pick at random among moves within this much of the
@@ -63,7 +67,7 @@ RANDOM_MARGIN = float(os.environ.get("FOW_RANDOM", "0"))  # pick at random among
 # the time on fully known positions, at a median cost of 15-25 cp, and chooses differently in two games
 # from the same known board: deliberate randomness, which keeps a hunter from steering it through
 # repeated positions and keeps its book and style from being read.
-SAFE_FIRST = os.environ.get("FOW_SAFE_FIRST", "0") == "1"  # Greek Gift's rule, read off 8,157 of its decisions
+SAFE_FIRST = os.environ.get("FOW_SAFE_FIRST", "1") == "1"  # Greek Gift's rule, read off 8,157 of its decisions
 # replayed through our own position set: when a move exists that loses the king in no consistent
 # position, it plays one of those 97% of the time (we: 93%; on king moves 98% vs 91%). 17 of our 54
 # arena losses had such a move available at the fatal decision; 1 of its 11 did.
@@ -90,7 +94,7 @@ DRAW = 0.0
 # of kings lost over 2,675 replayed decisions. The 6 is kept all the same: the choice of
 # move hardly depends on it there, and the weights judge a check from an unseen square as
 # ordinary chess would, a poor move if it can be blocked, when here it is a strong one.
-ATTACKED_WEIGHT = float(os.environ.get("FOW_ATTACKED", "6.0"))  # boards with our king attacked count this much more
+ATTACKED_WEIGHT = float(os.environ.get("FOW_ATTACKED", "1.0"))  # boards with our king attacked count this much more
 THREAT_WEIGHT = float(os.environ.get("FOW_THREAT", "1.0"))      # per piece of ours attacked from the fog: the belief under-rates such boards (arena: 1.5 calibrates)
 WIN, LOSS = 1.0, -1.0
 

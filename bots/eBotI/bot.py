@@ -41,10 +41,10 @@ MIN_SEARCH_SECONDS = 0.1  # below this the search cannot build a root; play the 
 TRAP_POSITIONS = 4000     # positions the helper checks for an unanswerable check after each move
 RISK_UNIFORM_SHARE = float(os.environ.get("FOW_RISK_UNIFORM", "0"))  # of the king-risk count, the part that ignores the belief weights (they can be wrong)
 UNCERTAIN_TIME = float(os.environ.get("FOW_TIME", "1.0"))  # budget multiplier reached when the set has 10,000 or more positions
-EXACT_RISK = os.environ.get("FOW_EXACT_RISK", "0") == "1"
-HANG_LAMBDA = float(os.environ.get("FOW_HANG", "0"))  # see stockfish_search.HANG_LAMBDA; the helper counts it
+EXACT_RISK = os.environ.get("FOW_EXACT_RISK", "1") == "1"
+HANG_LAMBDA = float(os.environ.get("FOW_HANG", "1"))  # see stockfish_search.HANG_LAMBDA; the helper counts it
 HANG_POSITIONS = 4000     # positions the helper weighs for it (heaviest half, random half)  # king risk counted over the whole set by the helper (v4 samples)
-BOOK = os.environ.get("FOW_BOOK", "")  # "gg": Greek Gift's opening moves from its arena replays, keyed by the view
+BOOK = os.environ.get("FOW_BOOK", "gg")  # "gg": Greek Gift's opening moves from its arena replays, keyed by the view
 BOOK_PLIES = 20
 _BOOK: dict[str, list] | None = None
 
@@ -59,7 +59,7 @@ def book_move(side: chess.Color, view: str, moves: list[chess.Move]) -> chess.Mo
         with open(Path(__file__).resolve().parent / "eBotI" / "book_gg.json") as f:
             _BOOK = json.load(f)
     entry = _BOOK.get(("w" if side else "b") + view)
-    if not entry:
+    if not entry or entry[1] < 2 or entry[1] < 0.5 * entry[2]:
         return None
     move = chess.Move.from_uci(entry[0])
     return move if move in moves else None

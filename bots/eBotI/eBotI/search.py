@@ -13,7 +13,7 @@ from .engine import EnginePool
 from .solver import Depth2Solver
 from .subgame import SubgameBuilder
 
-CLOCK_RULE = os.environ.get("FOW_CLOCK", "v4")  # "v4": remaining/30 + 0.8*inc; "reserve": see move_budget
+CLOCK_RULE = os.environ.get("FOW_CLOCK", "reserve")  # "v4": remaining/30 + 0.8*inc; "reserve": see move_budget
 CLOCK_RESERVE = 12.0   # seconds kept back; below it a move gets the increment only
 CLOCK_DIVISOR = 40.0   # share of the spare at move 1 ...
 CLOCK_SLOPE = 0.75     # ... growing by this per move ...
