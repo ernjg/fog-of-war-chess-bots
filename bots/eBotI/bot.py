@@ -510,7 +510,10 @@ class ObscuroAgent(Agent):
             return None
         if len(hang) != len(moves):
             return None
-        return [hang[m.uci()] for m in moves]
+        # captures go untaxed: on the arena, captures into the fog net +1.5 to +3.5 over three
+        # plies for us and for the 2302 bot alike; the leak is quiet moves and standing pieces
+        view = self.tracker.current
+        return [0.0 if view[m.to_square] not in "?-" else hang[m.uci()] for m in moves]
 
     def _exact_risk(self, moves: list[chess.Move]) -> list[float] | None:
         """Per move, from the helper: the share of the whole set in which it loses the king at

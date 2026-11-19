@@ -376,3 +376,28 @@ Bayesian belief with a real opponent-move model, mixed with uniform by set size,
 tuned per opponent. Our opponents are deterministic bots with public replays, so a
 per-opponent move model is possible. It is a multi-day build and the arena would have to
 judge it.
+
+## 17. Literature and the material leak (2026-11-18, night)
+
+Two studies, both in `docs/research/`. `literature.md` reads the RBC winners (StrangeFish,
+StrangeFish2, Fianchetto, Kevin, Penumbra), Obscuro and the Kriegspiel work from source: every
+mean/min/CVaR/paranoia knob is neutral or negative wherever it was measured (Penumbra's grid,
+Parker 2006, our own tests); what the winners add over "mean plus king risk" is material
+hazard pricing (StrangeFish2's hanging-material and weak-squares terms, Fianchetto's caution,
+Ciancarini's hazard model), a drained clock, a book and purified randomness. Obscuro's time
+curve: +45 Elo per doubling under 1 s a move, +16 above 4 s.
+
+`material-leaks.md` traces our 9.3 points a game lost to captures by pieces we could not see
+(541 captures in 150 games) against Greek Gift's 7.8. The whole gap is quiet moves: pieces
+moved onto a fog-attacked square (0.63 vs 0.22 a game) and undefended pieces left standing
+under an unseen attacker (1.39 vs 0.51). Captures into the fog cost both bots the same (4.7 a
+game) and net +1.5 to +3.5 over three plies, so they must not be taxed. A zero-hazard
+alternative existed on the true board in 309 of our 327 moved-in cases. At equal view-only
+exposure Greek Gift is hit two to three times less often: its belief, not only its rule.
+
+Built: helper command `hang` (exact over the set, like `risk`): per candidate, the expected
+pawns the opponent can take next move with a piece on a square we will not see, recapture
+netted off, kings excluded. `FOW_HANG=λ` subtracts λ × that (in pawns on the tanh scale) from
+every non-capturing move's value. λ = 1 is fair pricing; the data says the sampled roots
+already hold part of it, and Greek Gift behaves as if λ were larger. Test: λ = 1 against v4,
+150 games at 60+1, after the clock match (eBotI with the reserve clock against v4 at 180+2).
