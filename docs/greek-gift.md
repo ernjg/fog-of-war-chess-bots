@@ -48,3 +48,42 @@ unused. It is not deterministic in its moves (identical views give different rep
 
 **Its losses.** 11, all to bots rated 1849-2030, 9 of them from 8-20 points down; the fatal
 move was a king step onto an attacked square in 7 (a safe square existed in 5).
+
+## Architecture, as far as the replays show it (second study, 2026-11-18 evening)
+
+Five more reports in `docs/greek-gift/` (`engine`, `belief`, `features`, `bait`, `timing`).
+
+- **It tracks the exact consistent position set, the one we track.** Its slow think mode
+  (x1.5) switches on when the set, counted as we count it (board + castling rights), reaches
+  1,000 positions: 100% agreement over 5,347 decisions. Think time is a fixed formula of
+  clock and ply with a 7 ms residual: an anytime search with a budget set before it starts,
+  stopping at half the budget when one root move dominates. The 0.3 s moves are a view-keyed
+  opening book used stochastically (1.d4 in 90/90 games; Stockfish prefers e4 at every depth).
+- **Its evaluator is not identifiable as Stockfish or Leela.** On 60-89 positions where its
+  view determines the whole board, its move is Stockfish's top-1 55-63% of the time, flat over
+  depths 2-15 and 0.5-5 s; Maia-1900, Maia-1500 and a Leela T1 network (1 to 400 nodes) match
+  it 55-63% too. Its deviations cost 15-25 cp median. Two games reaching the same fully known
+  position chose differently. Consistent with an engine plus deliberate randomness among
+  near-equal moves; not with a stronger or different engine.
+- **It does not model the opponent's blindness.** 30 of 39 queen/rook baits are Stockfish's
+  top move on the true board; 31 are forced mates there (the hidden protector makes the king's
+  capture illegal). It deviates from the engine only in positions already won by 5+ pawns.
+- **No fog-specific evaluation terms worth naming.** A conditional logit over 2,135 of its
+  decisions and 1,651 of ours gives the same weights for vision, king exposure, castling and
+  material hanging to visible attackers. Differences: king moves -35 cp relative to us,
+  moves onto fog-attacked squares -20, captures -20, queen moves +25.
+- **Same information, stricter decision rule.** Its games replayed through our position set
+  from its observations: when a zero-risk move exists it takes a positive-risk move in 3.4%
+  of decisions (we 7.2%), on king moves 13.4% (we 27.2%); risk > 0.03 with a safe move 0.8%
+  (we 2.5%). At the fatal decision 17 of our 54 losses had a zero-risk move; 1 of its 11.
+  Walk-ins per 1,000 decisions: 1.3 vs 11.0. Our belief over-predicted its deaths 3x, but
+  half of that is our x6 weight on king-attacked states and the rest is small (3 expected,
+  0 realized under uniform weights): its belief is not sharper than ours in any way we can see.
+- **Material.** Its moved piece lands on a fog-attacked square 13.6% of the time, ours
+  17.3% (queen/rook 4.5% vs 7.7%); it plays zero-hazard moves 63% vs our 54%. Realized
+  threat rates match prediction for both: again the rule, not the information.
+
+What this prescribes for eBotI, in order: the safe-first rule with exact risk and no x6
+weight (`FOW_SAFE_FIRST=1 FOW_EXACT_RISK=1 FOW_ATTACKED=1`, in test against v4), then the
+clock and the book, then randomness among near-equal moves. Nothing here needs a new
+evaluator or a new belief.
