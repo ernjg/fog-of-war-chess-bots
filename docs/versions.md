@@ -25,6 +25,12 @@ The next version is planned under Next in `docs/obscuro.md`. Its first step is S
 values at the leaves of the PCFR+ tree. It will be built in `bots/obscuro`, with
 `obscuro_v4` as the fixed opponent to measure it against.
 
+A separate local trial of that first step is recorded in
+[Stockfish leaves in two-ply PCFR+](experiments/stockfish-leaf-pcfr.md). It scored
+113-0-7 against material-only PCFR+ but 24-1-95 against frozen v4, over 120 games
+per opponent at 36+0.4. It was never uploaded. The report and compact results
+document that experiment; its implementation is not added to this branch.
+
 ## What frozen means
 
 A frozen bot is one folder, `bots/obscuro_v<N>`. For v3 and v4 the files beside `bot.py`
