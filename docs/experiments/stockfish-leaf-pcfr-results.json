@@ -1,0 +1,215 @@
+{
+  "experiment": "Stockfish leaves in two-ply PCFR+",
+  "experiment_date": "2026-11-16",
+  "status": "completed local experiment; never uploaded to the arena",
+  "documentation_only": true,
+  "implementation_included": false,
+  "time_control": {
+    "base_seconds": 36,
+    "increment_seconds": 0.4
+  },
+  "parallel_games": 4,
+  "pause_waiting_bot_process_group": true,
+  "configuration": {
+    "tree_plies": 2,
+    "stockfish_leaf_depth": 1,
+    "max_root_draws": 200,
+    "posterior_root_weights": false,
+    "local_flags": [
+      "--search",
+      "pcfr"
+    ]
+  },
+  "score_definition": "(wins + 0.5 * draws) / games",
+  "audit_date": "2026-11-25",
+  "replay_manifest_definition": "SHA-256 of the concatenation of lines <repository-relative replay path> <SHA-256 of raw replay bytes> followed by newline, sorted by replay path within each batch.",
+  "evidence_limitations": [
+    "Raw replays and experimental source remain local and are not included in this documentation change.",
+    "Error-marker counts refer to retained diagnostics; some logs retain only their final 16 KiB.",
+    "These are local 36+0.4 results, not arena records or 180+2 strength results."
+  ],
+  "comparisons": [
+    {
+      "opponent": "material-only PCFR+",
+      "games": 120,
+      "counts": {
+        "W": 113,
+        "D": 0,
+        "L": 7
+      },
+      "score": 0.9416666666666667,
+      "strict_win_rate": 0.9416666666666667,
+      "source_local_commit": "79dcc52fa573756de157432dab36418488a77f2a",
+      "source_local_summary": "data/hybrid-validation/summary.json",
+      "source_summary_sha256": "7b59f090004adeff618aab3da256a94e1110bc2ad63740e0a525ff15431dcb48",
+      "batches": [
+        {
+          "label": "base-material-forward",
+          "candidate": "obscuro_pcfr",
+          "games": 60,
+          "counts": {
+            "W": 57,
+            "D": 0,
+            "L": 3
+          },
+          "score": 0.95,
+          "by_candidate_color": {
+            "white": {
+              "W": 28,
+              "D": 0,
+              "L": 2
+            },
+            "black": {
+              "W": 29,
+              "D": 0,
+              "L": 1
+            }
+          },
+          "end_reasons": {
+            "King capturable": 60
+          },
+          "integrity_faults": 0,
+          "retained_error_markers": {
+            "Traceback": 0,
+            "stockfish did not start": 0,
+            "stockfish ready: 1 of 2": 0,
+            "stockfish engine lost": 0,
+            "position-set helper lost": 0
+          },
+          "replay_manifest_sha256": "bf5b7936bc3ac20fd209b5b10973d50221004ba5a7695274a071bcaefa2bf37b",
+          "replay_directory": "data/hybrid-validation/material-forward/20261116-175655",
+          "retained_diagnostic_tail_logs": 0
+        },
+        {
+          "label": "base-material-reverse",
+          "candidate": "obscuro_pcfr",
+          "games": 60,
+          "counts": {
+            "W": 56,
+            "D": 0,
+            "L": 4
+          },
+          "score": 0.9333333333333333,
+          "by_candidate_color": {
+            "black": {
+              "W": 26,
+              "D": 0,
+              "L": 4
+            },
+            "white": {
+              "W": 30,
+              "D": 0,
+              "L": 0
+            }
+          },
+          "end_reasons": {
+            "King capturable": 60
+          },
+          "integrity_faults": 0,
+          "retained_error_markers": {
+            "Traceback": 0,
+            "stockfish did not start": 0,
+            "stockfish ready: 1 of 2": 0,
+            "stockfish engine lost": 0,
+            "position-set helper lost": 0
+          },
+          "replay_manifest_sha256": "768830759235aeb885e723a6dad6d63a93f15548ad297f9b246b0330821d5c52",
+          "replay_directory": "data/hybrid-validation/material-reverse/20261116-181220",
+          "retained_diagnostic_tail_logs": 2
+        }
+      ]
+    },
+    {
+      "opponent": "frozen obscuro_v4",
+      "games": 120,
+      "counts": {
+        "W": 24,
+        "D": 1,
+        "L": 95
+      },
+      "score": 0.20416666666666666,
+      "strict_win_rate": 0.2,
+      "source_local_commit": "79dcc52fa573756de157432dab36418488a77f2a",
+      "source_local_summary": "data/hybrid-validation/summary.json",
+      "source_summary_sha256": "7b59f090004adeff618aab3da256a94e1110bc2ad63740e0a525ff15431dcb48",
+      "batches": [
+        {
+          "label": "base-v4-forward",
+          "candidate": "obscuro_pcfr",
+          "games": 60,
+          "counts": {
+            "W": 12,
+            "D": 0,
+            "L": 48
+          },
+          "score": 0.2,
+          "by_candidate_color": {
+            "white": {
+              "W": 11,
+              "D": 0,
+              "L": 19
+            },
+            "black": {
+              "W": 1,
+              "D": 0,
+              "L": 29
+            }
+          },
+          "end_reasons": {
+            "King capturable": 60
+          },
+          "integrity_faults": 0,
+          "retained_error_markers": {
+            "Traceback": 0,
+            "stockfish did not start": 0,
+            "stockfish ready: 1 of 2": 0,
+            "stockfish engine lost": 0,
+            "position-set helper lost": 0
+          },
+          "replay_manifest_sha256": "bf33548ba49603919a8b58e31489e0b4bfe696288e6a8f369fd328f4b7349870",
+          "replay_directory": "data/hybrid-validation/v4-forward/20261116-182852",
+          "retained_diagnostic_tail_logs": 0
+        },
+        {
+          "label": "base-v4-reverse",
+          "candidate": "obscuro_pcfr",
+          "games": 60,
+          "counts": {
+            "W": 12,
+            "D": 1,
+            "L": 47
+          },
+          "score": 0.20833333333333334,
+          "by_candidate_color": {
+            "black": {
+              "W": 2,
+              "D": 0,
+              "L": 28
+            },
+            "white": {
+              "W": 10,
+              "D": 1,
+              "L": 19
+            }
+          },
+          "end_reasons": {
+            "King capturable": 59,
+            "Threefold repetition": 1
+          },
+          "integrity_faults": 0,
+          "retained_error_markers": {
+            "Traceback": 0,
+            "stockfish did not start": 0,
+            "stockfish ready: 1 of 2": 0,
+            "stockfish engine lost": 0,
+            "position-set helper lost": 0
+          },
+          "replay_manifest_sha256": "8db47a2afab8a6f0daacef75d278b1424a27710267464a56b61e4d5e6b27d8fe",
+          "replay_directory": "data/hybrid-validation/v4-reverse/20261116-184540",
+          "retained_diagnostic_tail_logs": 0
+        }
+      ]
+    }
+  ],
+  "decision": "Retain v4; this candidate failed to outperform frozen v4 at the tested clock."
+}
